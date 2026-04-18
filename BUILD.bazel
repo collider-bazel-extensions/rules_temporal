@@ -1,0 +1,55 @@
+load("//private:binary.bzl", "temporal_binary")
+
+# ---------------------------------------------------------------------------
+# Platform config_settings
+# ---------------------------------------------------------------------------
+
+config_setting(
+    name = "_temporal_linux_amd64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+config_setting(
+    name = "_temporal_darwin_arm64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
+config_setting(
+    name = "_temporal_darwin_amd64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+# ---------------------------------------------------------------------------
+# temporal_binary targets — one per supported version
+# ---------------------------------------------------------------------------
+
+temporal_binary(
+    name    = "temporal_1_6_2",
+    version = "1.6.2",
+    binary  = select({
+        ":_temporal_linux_amd64":  "@temporal_1_6_2_linux_amd64//:temporal_bins",
+        ":_temporal_darwin_arm64": "@temporal_1_6_2_darwin_arm64//:temporal_bins",
+        ":_temporal_darwin_amd64": "@temporal_1_6_2_darwin_amd64//:temporal_bins",
+    }),
+    visibility = ["//visibility:public"],
+)
+
+# ---------------------------------------------------------------------------
+# Default alias — used by temporal_build and temporal_test when no explicit
+# temporal = ... attribute is given.
+# ---------------------------------------------------------------------------
+
+alias(
+    name       = "temporal_default",
+    actual     = ":temporal_1_6_2",
+    visibility = ["//visibility:public"],
+)

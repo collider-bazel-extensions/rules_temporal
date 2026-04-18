@@ -1,0 +1,19 @@
+module(
+    name = "rules_temporal",
+    version = "0.1.0",
+    compatibility_level = 1,
+)
+
+bazel_dep(name = "bazel_skylib", version = "1.5.0")
+bazel_dep(name = "platforms", version = "0.0.9")
+
+temporal = use_extension("//:extensions.bzl", "temporal")
+temporal.system(
+    versions = ["1.6.2"],
+    # bin_dir auto-detected via PATH if omitted.
+)
+use_repo(temporal,
+    "temporal_1_6_2_linux_amd64",
+    "temporal_1_6_2_darwin_arm64",
+    "temporal_1_6_2_darwin_amd64",
+)

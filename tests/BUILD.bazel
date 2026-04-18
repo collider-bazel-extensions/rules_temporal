@@ -1,0 +1,36 @@
+load("@rules_temporal//:defs.bzl", "temporal_build", "temporal_test")
+
+# ---------------------------------------------------------------------------
+# Worker: hello_worker
+#
+# A minimal Python worker that registers HelloWorkflow + greet_activity.
+# Used by all smoke tests.
+# ---------------------------------------------------------------------------
+
+py_binary(
+    name         = "hello_worker_bin",
+    srcs         = ["workers/hello_worker.py"],
+    main         = "workers/hello_worker.py",
+    python_version = "PY3",
+    visibility   = ["//visibility:private"],
+)
+
+temporal_build(
+    name           = "hello_worker",
+    worker_binary  = ":hello_worker_bin",
+    task_queue     = "test-hello-queue",
+    workflow_types = ["HelloWorkflow"],
+    activity_types = ["greet_activity"],
+)
+
+# ---------------------------------------------------------------------------
+# Smoke test: end-to-end HelloWorkflow execution
+# ---------------------------------------------------------------------------
+
+temporal_test(
+    name   = "hello_test",
+    worker = ":hello_worker",
+    srcs   = ["hello_test.sh"],
+    size   = "medium",
+    tags   = ["temporal"],
+)
