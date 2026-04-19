@@ -2,7 +2,8 @@
 # hello_test.sh
 #
 # Smoke test for rules_temporal.
-# Verifies that HelloWorkflow executes end-to-end via an ephemeral Temporal cluster.
+# Verifies that HelloWorkflow, EchoWorkflow, and MathWorkflow execute
+# end-to-end via an ephemeral Temporal cluster.
 
 set -euo pipefail
 
@@ -45,29 +46,14 @@ echo "Task queue: $TEMPORAL_TASK_QUEUE"
 echo "Temporal:   $TEMPORAL_BIN"
 
 # -------------------------------------------------------------------------
-# Run HelloWorkflow and wait for result
+# Helper: extract 'result' field from temporal workflow execute JSON output
 # -------------------------------------------------------------------------
 
-RESULT_JSON=$("$TEMPORAL_BIN" workflow execute \
-    --address    "$TEMPORAL_ADDRESS" \
-    --namespace  "$TEMPORAL_NAMESPACE" \
-    --type       HelloWorkflow \
-    --task-queue "$TEMPORAL_TASK_QUEUE" \
-    --input      '"World"' \
-    -o json 2>&1) || {
-    echo "FAIL: workflow execute returned non-zero" >&2
-    echo "$RESULT_JSON" >&2
-    exit 1
-}
-
-echo "Raw result: $RESULT_JSON"
-
-# Extract the result value.
-RESULT_VAL=$(echo "$RESULT_JSON" | \
+extract_result() {
+    local json="$1"
     python3 -c "
 import sys, json
-text = sys.stdin.read()
-# Try whole-input parse first (pretty-printed JSON), then line-by-line (NDJSON).
+text = '''$json'''
 try:
     obj = json.loads(text)
     if 'result' in obj:
@@ -86,13 +72,92 @@ for line in text.splitlines():
             sys.exit(0)
     except json.JSONDecodeError:
         pass
-" 2>/dev/null || echo "")
+" 2>/dev/null || echo ""
+}
 
+# -------------------------------------------------------------------------
+# Test 1: HelloWorkflow
+# -------------------------------------------------------------------------
+
+RESULT_JSON=$("$TEMPORAL_BIN" workflow execute \
+    --address    "$TEMPORAL_ADDRESS" \
+    --namespace  "$TEMPORAL_NAMESPACE" \
+    --type       HelloWorkflow \
+    --task-queue "$TEMPORAL_TASK_QUEUE" \
+    --input      '"World"' \
+    -o json 2>&1) || {
+    echo "FAIL: HelloWorkflow execute returned non-zero" >&2
+    echo "$RESULT_JSON" >&2
+    exit 1
+}
+
+echo "HelloWorkflow raw result: $RESULT_JSON"
+RESULT_VAL=$(extract_result "$RESULT_JSON")
 EXPECTED='"Hello, World!"'
 if [[ "$RESULT_VAL" == "$EXPECTED" ]]; then
     echo "OK: HelloWorkflow returned $RESULT_VAL"
 else
-    echo "FAIL: expected $EXPECTED, got '$RESULT_VAL'" >&2
+    echo "FAIL: HelloWorkflow: expected $EXPECTED, got '$RESULT_VAL'" >&2
+    exit 1
+fi
+
+# -------------------------------------------------------------------------
+# Test 2: EchoWorkflow — returns input unchanged
+# -------------------------------------------------------------------------
+
+ECHO_JSON=$("$TEMPORAL_BIN" workflow execute \
+    --address    "$TEMPORAL_ADDRESS" \
+    --namespace  "$TEMPORAL_NAMESPACE" \
+    --type       EchoWorkflow \
+    --task-queue "$TEMPORAL_TASK_QUEUE" \
+    --input      '"ping"' \
+    -o json 2>&1) || {
+    echo "FAIL: EchoWorkflow execute returned non-zero" >&2
+    echo "$ECHO_JSON" >&2
+    exit 1
+}
+
+echo "EchoWorkflow raw result: $ECHO_JSON"
+ECHO_VAL=$(extract_result "$ECHO_JSON")
+EXPECTED_ECHO='"ping"'
+if [[ "$ECHO_VAL" == "$EXPECTED_ECHO" ]]; then
+    echo "OK: EchoWorkflow returned $ECHO_VAL"
+else
+    echo "FAIL: EchoWorkflow: expected $EXPECTED_ECHO, got '$ECHO_VAL'" >&2
+    exit 1
+fi
+
+# -------------------------------------------------------------------------
+# Test 3: MathWorkflow — add and multiply two numbers
+# -------------------------------------------------------------------------
+
+MATH_JSON=$("$TEMPORAL_BIN" workflow execute \
+    --address    "$TEMPORAL_ADDRESS" \
+    --namespace  "$TEMPORAL_NAMESPACE" \
+    --type       MathWorkflow \
+    --task-queue "$TEMPORAL_TASK_QUEUE" \
+    --input      '3' \
+    --input      '4' \
+    -o json 2>&1) || {
+    echo "FAIL: MathWorkflow execute returned non-zero" >&2
+    echo "$MATH_JSON" >&2
+    exit 1
+}
+
+echo "MathWorkflow raw result: $MATH_JSON"
+MATH_VAL=$(extract_result "$MATH_JSON")
+# Accept either field ordering.
+MATH_OK=$(python3 -c "
+import sys, json
+val = json.loads('$MATH_VAL')
+ok = isinstance(val, dict) and val.get('sum') == 7 and val.get('product') == 12
+print('yes' if ok else 'no')
+" 2>/dev/null || echo "no")
+
+if [[ "$MATH_OK" == "yes" ]]; then
+    echo "OK: MathWorkflow returned $MATH_VAL"
+else
+    echo "FAIL: MathWorkflow: expected {\"sum\":7,\"product\":12}, got '$MATH_VAL'" >&2
     exit 1
 fi
 

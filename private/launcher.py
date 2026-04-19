@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-rules_temporal test launcher.
+rules_temporal launcher.
 
-Reads TEMPORAL_MANIFEST (JSON), spins up an ephemeral Temporal dev server,
-starts the declared worker binary, then exec's the test binary with
-TEMPORAL_* env vars set.
+Mode is selected via RULES_TEMPORAL_MODE env var:
+  - unset / "test" → start server + worker, exec test binary
+  - "server"       → start server only, write env file, block
+
+Manifest env vars:
+  - TEMPORAL_MANIFEST       (test mode, set by temporal_test wrapper)
+  - RULES_TEMPORAL_MANIFEST (server mode, set by temporal_server wrapper)
 
 Never imported; always exec'd by the wrapper shell script.
 """
@@ -137,28 +141,6 @@ def _wait_server_ready(temporal_bin: str, host: str, port: int,
     )
 
 
-def _create_namespace(temporal_bin: str, address: str, namespace: str,
-                      tmp_dir: str = "") -> None:
-    """Create a fresh namespace for this test run."""
-    env = os.environ.copy()
-    if tmp_dir:
-        env["HOME"]   = tmp_dir
-        env["TMPDIR"] = tmp_dir
-    result = subprocess.run(
-        [temporal_bin, "operator", "namespace", "create", namespace,
-         "--address", address,
-         "--retention", "1d"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
-    if result.returncode != 0:
-        err = result.stderr.decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"Failed to create namespace '{namespace}':\n{err}"
-        )
-
-
 def _wait_worker_ready(temporal_bin: str, address: str,
                        namespace: str, task_queue: str,
                        timeout: float = 30.0,
@@ -189,7 +171,6 @@ def _wait_worker_ready(temporal_bin: str, address: str,
         if result.returncode == 0:
             try:
                 data = json.loads(result.stdout)
-                # 'pollers' key in the response lists active pollers
                 pollers = data.get("pollers", [])
                 if pollers:
                     return pollers
@@ -211,9 +192,6 @@ def _validate_registered_types(
     """
     Query the server for registered workflow/activity types on this task queue
     and fail fast if they do not match the declared types.
-
-    Uses 'temporal task-queue describe --select-build-id' approach via
-    build-id based versioning info, or falls back to text scanning.
     """
     env = os.environ.copy()
     if tmp_dir:
@@ -230,20 +208,13 @@ def _validate_registered_types(
         env=env,
     )
     if result.returncode != 0:
-        # Non-fatal: can't query, skip validation.
         _log("Warning: could not query task queue for type validation — skipping.")
         return
 
-    # The task-queue describe output lists pollers but not individual type names
-    # in all CLI versions.  We validate via the versioning endpoint if available;
-    # otherwise we skip with a warning so the test itself surfaces the mismatch.
     try:
         data = json.loads(result.stdout)
-        # If the response includes type-level information, validate it.
-        # (Available in Temporal CLI >= 1.1 with versioning enabled.)
         versions_by_type = data.get("versioningInfo", {}).get("typeInfoByType", {})
         if not versions_by_type:
-            # Type info not available in this CLI version/config — skip.
             return
 
         registered_workflows  = set(versions_by_type.get("WORKFLOW", {}).keys())
@@ -276,78 +247,101 @@ def _validate_registered_types(
         _log("Warning: could not parse task queue response for type validation — skipping.")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def _search_attribute_flags(search_attributes: dict) -> list[str]:
+    """Return --search-attribute flags for temporal server start-dev.
 
-def main() -> None:
-    # -- Read manifest -------------------------------------------------------
-    manifest_path = os.environ.get("TEMPORAL_MANIFEST")
-    if not manifest_path:
-        sys.exit("[rules_temporal] TEMPORAL_MANIFEST not set")
-    with open(manifest_path) as f:
-        m = json.load(f)
+    In Temporal server 1.24+, custom search attributes must be registered
+    at server startup via 'temporal server start-dev --search-attribute'.
+    The post-startup 'temporal operator search-attribute create' command
+    creates cluster-level attributes that are not mapped to namespaces in
+    this server version.
+    """
+    flags = []
+    for name, attr_type in search_attributes.items():
+        flags += ["--search-attribute", f"{name}={attr_type}"]
+    return flags
 
-    workspace       = m.get("workspace", "")
-    temporal_bin    = _find_runfile(m["temporal_bin"], workspace)
-    worker_bin      = _find_runfile(m["worker_binary"], workspace)
-    task_queue      = m["task_queue"]
-    workflow_types  = m.get("workflow_types", [])
-    activity_types  = m.get("activity_types", [])
 
-    _ensure_executable(temporal_bin)
-    _ensure_executable(worker_bin)
+def _replay_histories(temporal_bin: str, address: str, namespace: str,
+                       history_files: list[str], tmp_dir: str = "") -> None:
+    """Replay committed workflow history files against the running worker."""
+    if not history_files:
+        return
+    env = os.environ.copy()
+    if tmp_dir:
+        env["HOME"]   = tmp_dir
+        env["TMPDIR"] = tmp_dir
+    for history_file in history_files:
+        _log(f"Replaying workflow history: {history_file}")
+        result = subprocess.run(
+            [temporal_bin, "workflow", "replay",
+             "--address",       address,
+             "--namespace",     namespace,
+             "--workflow-file", history_file],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        if result.returncode != 0:
+            out = result.stdout.decode("utf-8", errors="replace")
+            err = result.stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Workflow history replay failed for {history_file}:\n"
+                f"stdout:\n{out}\nstderr:\n{err}"
+            )
 
-    # -- Port allocation -----------------------------------------------------
-    host = "127.0.0.1"
+
+def _start_server(temporal_bin: str, namespace: str,
+                   test_tmpdir: str,
+                   search_attributes = None) -> tuple:
+    """Allocate a free port, start temporal server start-dev, wait until ready.
+
+    The --namespace flag passed to start-dev auto-creates the namespace, so no
+    separate _create_namespace call is needed.
+
+    Custom search attributes are registered at startup via --search-attribute
+    flags (required in Temporal server 1.24+; post-startup create commands
+    create cluster-level attributes that are not namespace-scoped).
+
+    Returns (server_proc, address).
+    """
+    host        = "127.0.0.1"
     port, reserved_sock = _allocate_port()
-
-    # -- Workspace -----------------------------------------------------------
-    test_tmpdir = os.environ.get("TEST_TMPDIR") or tempfile.mkdtemp(prefix="rules_temporal_")
     server_log  = os.path.join(test_tmpdir, "temporal_server.log")
-    worker_log  = os.path.join(test_tmpdir, "temporal_worker.log")
-
-    # -- Generate a unique namespace for this test run -----------------------
-    namespace = f"temporal-test-{uuid.uuid4().hex[:12]}"
-
-    address = f"{host}:{port}"
-    _log(f"Namespace: {namespace}")
-
-    # -- Start Temporal dev server -------------------------------------------
+    address     = f"{host}:{port}"
     max_attempts = 5
-    server_proc  = None
+    _proc_holder = [None]   # mutable so the atexit closure sees updates
+    sa_flags = _search_attribute_flags(search_attributes or {})
 
     def _stop_server() -> None:
-        if server_proc is not None and server_proc.poll() is None:
+        proc = _proc_holder[0]
+        if proc is not None and proc.poll() is None:
             _log("Stopping Temporal server …")
-            server_proc.terminate()
+            proc.terminate()
             try:
-                server_proc.wait(timeout=10)
+                proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                server_proc.kill()
+                proc.kill()
 
     atexit.register(_stop_server)
 
     for attempt in range(1, max_attempts + 1):
         reserved_sock.close()
-        reserved_sock_closed = True
         try:
             _log(f"Starting Temporal server on {address} (attempt {attempt})")
+            cmd = [
+                temporal_bin, "server", "start-dev",
+                "--port",      str(port),
+                "--headless",
+                "--ip",        host,
+                "--namespace", namespace,
+            ] + sa_flags
             with open(server_log, "w") as log_f:
-                server_proc = subprocess.Popen(
-                    [
-                        temporal_bin, "server", "start-dev",
-                        "--port",      str(port),
-                        "--headless",
-                        "--ip",        host,
-                        "--namespace", namespace,
-                    ],
-                    stdout=log_f,
-                    stderr=log_f,
-                )
+                proc = subprocess.Popen(cmd, stdout=log_f, stderr=log_f)
+            _proc_holder[0] = proc
             _wait_server_ready(temporal_bin, host, port, tmp_dir=test_tmpdir)
             _log("Temporal server ready.")
-            break
+            return proc, address
         except (subprocess.SubprocessError, TimeoutError) as exc:
             _log(f"Attempt {attempt} failed: {exc}")
 
@@ -368,13 +362,53 @@ def main() -> None:
 
             port, reserved_sock = _allocate_port()
             address = f"{host}:{port}"
-            server_proc = None
+            _proc_holder[0] = None
+
+    sys.exit(1)  # unreachable
+
+
+# ---------------------------------------------------------------------------
+# Mode: test
+# ---------------------------------------------------------------------------
+
+def main_test(m: dict, workspace: str) -> None:
+    temporal_bin   = _find_runfile(m["temporal_bin"],  workspace)
+    worker_bin     = _find_runfile(m["worker_binary"], workspace)
+    task_queue     = m["task_queue"]
+    workflow_types = m.get("workflow_types", [])
+    activity_types = m.get("activity_types", [])
+    search_attrs   = m.get("search_attributes", {})
+    history_files  = [_find_runfile(p, workspace) for p in m.get("history_files", [])]
+
+    _ensure_executable(temporal_bin)
+    _ensure_executable(worker_bin)
+
+    test_tmpdir = os.environ.get("TEST_TMPDIR") or tempfile.mkdtemp(prefix="rules_temporal_")
+    namespace   = f"temporal-test-{uuid.uuid4().hex[:12]}"
+    worker_log  = os.path.join(test_tmpdir, "temporal_worker.log")
+
+    _log(f"Namespace: {namespace}")
+    if search_attrs:
+        _log(f"Custom search attributes: {list(search_attrs.keys())}")
+
+    # Start Temporal dev server.
+    # --namespace auto-creates the namespace; no separate create call needed.
+    # Search attributes are registered at server startup via --search-attribute
+    # flags (required for Temporal server 1.24+).
+    _server_proc, address = _start_server(
+        temporal_bin, namespace, test_tmpdir,
+        search_attributes=search_attrs,
+    )
 
     # -- Start worker --------------------------------------------------------
     worker_env = os.environ.copy()
     worker_env["TEMPORAL_ADDRESS"]    = address
     worker_env["TEMPORAL_NAMESPACE"]  = namespace
     worker_env["TEMPORAL_TASK_QUEUE"] = task_queue
+    # NOTE: do NOT override HOME/TMPDIR in the worker env.  The worker process
+    # needs its original HOME to find user-installed Python packages such as
+    # temporalio.  HOME/TMPDIR overrides are only applied to Temporal CLI
+    # subprocess calls (via tmp_dir= in the helper functions above).
 
     _log(f"Starting worker: {os.path.basename(worker_bin)}")
     with open(worker_log, "w") as wlog_f:
@@ -403,7 +437,6 @@ def main() -> None:
                            tmp_dir=test_tmpdir)
         _log("Worker ready.")
     except TimeoutError as exc:
-        # Print worker log to help diagnose the failure.
         if os.path.exists(worker_log):
             with open(worker_log) as wlf:
                 _log("Worker log:\n" + wlf.read())
@@ -425,6 +458,17 @@ def main() -> None:
         tmp_dir=test_tmpdir,
     )
 
+    # -- Replay committed workflow histories (if any) ------------------------
+    if history_files:
+        _log(f"Replaying {len(history_files)} workflow history file(s) …")
+        try:
+            _replay_histories(temporal_bin, address, namespace,
+                              history_files, tmp_dir=test_tmpdir)
+        except RuntimeError as exc:
+            _log(str(exc))
+            sys.exit(1)
+        _log("All history replays succeeded.")
+
     # -- Exec test binary ----------------------------------------------------
     test_binary = os.environ.get("TEMPORAL_TEST_BINARY")
     if not test_binary:
@@ -436,14 +480,85 @@ def main() -> None:
     env["TEMPORAL_ADDRESS"]    = address
     env["TEMPORAL_NAMESPACE"]  = namespace
     env["TEMPORAL_TASK_QUEUE"] = task_queue
-    # Ensure HOME and TMPDIR are set so the Temporal CLI can find its config
-    # dirs inside the Bazel sandbox (which may not inherit these from the shell).
+    # Ensure HOME and TMPDIR are set so the Temporal CLI (used by the test
+    # script) can find its config dirs inside the Bazel sandbox.
     if test_tmpdir:
         env.setdefault("HOME",   test_tmpdir)
         env.setdefault("TMPDIR", test_tmpdir)
 
     _log(f"Executing test binary: {test_binary}")
     os.execve(test_binary, [test_binary] + sys.argv[1:], env)
+
+
+# ---------------------------------------------------------------------------
+# Mode: server
+# ---------------------------------------------------------------------------
+
+def main_server(m: dict, workspace: str) -> None:
+    temporal_bin = _find_runfile(m["temporal_bin"], workspace)
+    _ensure_executable(temporal_bin)
+
+    test_tmpdir = os.environ.get("TEST_TMPDIR") or tempfile.mkdtemp(prefix="rules_temporal_")
+    namespace   = f"temporal-test-{uuid.uuid4().hex[:12]}"
+
+    _log(f"Namespace: {namespace}")
+
+    # Start Temporal dev server.
+    # --namespace auto-creates the namespace; no separate create call needed.
+    _server_proc, address = _start_server(temporal_bin, namespace, test_tmpdir)
+
+    # Write env file atomically once server is ready.
+    env_file = os.environ.get("RULES_TEMPORAL_OUTPUT_ENV_FILE")
+    if not env_file:
+        sys.exit("[rules_temporal] RULES_TEMPORAL_OUTPUT_ENV_FILE not set in server mode")
+
+    env_content = (
+        f"TEMPORAL_ADDRESS={address}\n"
+        f"TEMPORAL_NAMESPACE={namespace}\n"
+    )
+    tmp_path = env_file + ".tmp"
+    with open(tmp_path, "w") as f:
+        f.write(env_content)
+    os.replace(tmp_path, env_file)
+    _log(f"Wrote server env file: {env_file}")
+
+    # Handle SIGTERM (rules_itest) and SIGINT (Ctrl-C / bazel run).
+    def _handle_signal(signum: int, frame: object) -> None:
+        _log(f"Received signal {signum}; shutting down.")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT,  _handle_signal)
+
+    _log("Server ready. Blocking until SIGTERM/SIGINT …")
+    signal.pause()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    mode = os.environ.get("RULES_TEMPORAL_MODE", "test")
+
+    if mode == "server":
+        manifest_path = os.environ.get("RULES_TEMPORAL_MANIFEST")
+        if not manifest_path:
+            sys.exit("[rules_temporal] RULES_TEMPORAL_MANIFEST not set")
+    else:
+        manifest_path = os.environ.get("TEMPORAL_MANIFEST")
+        if not manifest_path:
+            sys.exit("[rules_temporal] TEMPORAL_MANIFEST not set")
+
+    with open(manifest_path) as f:
+        m = json.load(f)
+
+    workspace = m.get("workspace", "")
+
+    if mode == "server":
+        main_server(m, workspace)
+    else:
+        main_test(m, workspace)
 
 
 if __name__ == "__main__":

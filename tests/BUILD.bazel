@@ -1,30 +1,45 @@
-load("@rules_temporal//:defs.bzl", "temporal_build", "temporal_test")
+load("@rules_temporal//:defs.bzl",
+    "temporal_build",
+    "temporal_health_check",
+    "temporal_namespace_config",
+    "temporal_server",
+    "temporal_test",
+)
 
 # ---------------------------------------------------------------------------
 # Worker: hello_worker
 #
-# A minimal Python worker that registers HelloWorkflow + greet_activity.
+# Registers HelloWorkflow, EchoWorkflow, MathWorkflow, CounterWorkflow.
 # Used by all smoke tests.
 # ---------------------------------------------------------------------------
 
 py_binary(
-    name         = "hello_worker_bin",
-    srcs         = ["workers/hello_worker.py"],
-    main         = "workers/hello_worker.py",
+    name           = "hello_worker_bin",
+    srcs           = ["workers/hello_worker.py"],
+    main           = "workers/hello_worker.py",
     python_version = "PY3",
-    visibility   = ["//visibility:private"],
+    visibility     = ["//visibility:private"],
 )
 
 temporal_build(
     name           = "hello_worker",
     worker_binary  = ":hello_worker_bin",
     task_queue     = "test-hello-queue",
-    workflow_types = ["HelloWorkflow"],
-    activity_types = ["greet_activity"],
+    workflow_types = [
+        "HelloWorkflow",
+        "EchoWorkflow",
+        "MathWorkflow",
+        "CounterWorkflow",
+    ],
+    activity_types = [
+        "greet_activity",
+        "add_activity",
+        "multiply_activity",
+    ],
 )
 
 # ---------------------------------------------------------------------------
-# Smoke test: end-to-end HelloWorkflow execution
+# Smoke test: HelloWorkflow, EchoWorkflow, MathWorkflow
 # ---------------------------------------------------------------------------
 
 temporal_test(
@@ -33,4 +48,76 @@ temporal_test(
     srcs   = ["hello_test.sh"],
     size   = "medium",
     tags   = ["temporal"],
+)
+
+# ---------------------------------------------------------------------------
+# Namespace config test: custom search attributes
+# ---------------------------------------------------------------------------
+
+temporal_namespace_config(
+    name   = "test_namespace_config",
+    worker = ":hello_worker",
+    search_attributes = {
+        "TestCustomerId": "Keyword",
+        "TestOrderTotal": "Double",
+    },
+)
+
+temporal_test(
+    name             = "namespace_config_test",
+    worker           = ":hello_worker",
+    namespace_config = ":test_namespace_config",
+    srcs             = ["namespace_config_test.sh"],
+    size             = "medium",
+    tags             = ["temporal"],
+)
+
+# ---------------------------------------------------------------------------
+# Replay test: export and replay workflow history
+# ---------------------------------------------------------------------------
+
+temporal_test(
+    name   = "temporal_replay_test",
+    worker = ":hello_worker",
+    srcs   = ["temporal_replay_test.sh"],
+    size   = "medium",
+    tags   = ["temporal"],
+)
+
+# ---------------------------------------------------------------------------
+# temporal_server + temporal_health_check tests
+#
+# temporal_server_test_svc is a long-running Temporal dev server (not a
+# temporal_test).  temporal_server_test starts it as a subprocess and
+# verifies it writes its env file and exits cleanly on SIGTERM.
+#
+# temporal_health_check_test verifies the health-check shell script exits
+# 0/non-zero based solely on whether the env file is present.
+# ---------------------------------------------------------------------------
+
+temporal_server(
+    name = "temporal_server_test_svc",
+)
+
+temporal_health_check(
+    name   = "temporal_server_test_health",
+    server = ":temporal_server_test_svc",
+)
+
+sh_test(
+    name = "temporal_server_test",
+    srcs = ["temporal_server_test.sh"],
+    args = ["$(rootpath :temporal_server_test_svc)"],
+    data = [":temporal_server_test_svc"],
+    size = "large",
+    tags = ["temporal"],
+)
+
+sh_test(
+    name = "temporal_health_check_test",
+    srcs = ["temporal_health_check_test.sh"],
+    args = ["$(rootpath :temporal_server_test_health)"],
+    data = [":temporal_server_test_health"],
+    size = "small",
+    tags = ["temporal"],
 )

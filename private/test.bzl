@@ -2,6 +2,24 @@
 
 load("//private:binary.bzl", "TemporalBinaryInfo")
 load("//private:worker.bzl", "TemporalWorkerInfo")
+load("//private:namespace_config.bzl", "TemporalNamespaceConfigInfo")
+load("//private:history.bzl", "TemporalWorkflowHistoryInfo")
+
+# ---------------------------------------------------------------------------
+# JSON serialization helpers (no json.encode in Bazel < 6)
+# ---------------------------------------------------------------------------
+
+def _json_str(s):
+    """Serialize a string as a JSON string literal."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+def _json_str_list(lst):
+    """Serialize a list of strings as a JSON array."""
+    return "[" + ", ".join([_json_str(s) for s in lst]) + "]"
+
+def _json_str_dict(d):
+    """Serialize a dict of string→string as a JSON object."""
+    return "{" + ", ".join([_json_str(k) + ": " + _json_str(v) for k, v in d.items()]) + "}"
 
 # ---------------------------------------------------------------------------
 # Internal rule: launcher + runfiles assembly
@@ -9,18 +27,61 @@ load("//private:worker.bzl", "TemporalWorkerInfo")
 
 def _temporal_launcher_impl(ctx):
     worker_info = ctx.attr.worker[TemporalWorkerInfo]
+    workspace   = ctx.workspace_name
+
+    # Collect optional namespace config.
+    search_attrs = {}
+    if ctx.attr.namespace_config:
+        ns_info      = ctx.attr.namespace_config[TemporalNamespaceConfigInfo]
+        search_attrs = ns_info.search_attributes
+
+    # Collect optional workflow history files.
+    history_files    = []
+    history_runfiles = ctx.runfiles()
+    if ctx.attr.history:
+        hist_info     = ctx.attr.history[TemporalWorkflowHistoryInfo]
+        history_files = [f.short_path for f in hist_info.history_files.to_list()]
+        history_runfiles = ctx.runfiles(transitive_files = hist_info.history_files)
+
+    # Generate a combined manifest for this specific test target.
+    # This lets the launcher pick up search_attributes and history_files
+    # without touching the temporal_build manifest.
+    manifest_content = """\
+{{
+  "workspace":         {workspace},
+  "temporal_bin":      {temporal_bin},
+  "worker_binary":     {worker_binary},
+  "task_queue":        {task_queue},
+  "workflow_types":    {workflow_types},
+  "activity_types":    {activity_types},
+  "search_attributes": {search_attributes},
+  "history_files":     {history_files}
+}}
+""".format(
+        workspace        = _json_str(workspace),
+        temporal_bin     = _json_str(worker_info.binary_info.temporal.short_path),
+        worker_binary    = _json_str(worker_info.worker_binary.short_path),
+        task_queue       = _json_str(worker_info.task_queue),
+        workflow_types   = _json_str_list(worker_info.workflow_types),
+        activity_types   = _json_str_list(worker_info.activity_types),
+        search_attributes = _json_str_dict(search_attrs),
+        history_files    = _json_str_list(history_files),
+    )
+
+    manifest = ctx.actions.declare_file(ctx.label.name + "_test_manifest.json")
+    ctx.actions.write(output = manifest, content = manifest_content)
 
     # Collect all files the launcher needs at runtime.
     runfiles = ctx.runfiles(
-        files = [ctx.file.launcher, worker_info.manifest],
+        files            = [ctx.file.launcher, manifest],
         transitive_files = worker_info.binary_info.all_files,
     ).merge_all([
         ctx.runfiles(transitive_files = worker_info.worker_runfiles),
         ctx.attr.test_binary.default_runfiles,
+        history_runfiles,
     ])
 
     # Wrapper script: sets env vars and execs the launcher.
-    workspace = ctx.workspace_name
     wrapper = ctx.actions.declare_file(ctx.label.name + "_temporal_wrapper.sh")
     ctx.actions.write(
         output    = wrapper,
@@ -37,7 +98,7 @@ export TEMPORAL_TEST_BINARY="$RUNFILES_ROOT/{workspace}/{test_bin}"
 exec python3 "$RUNFILES_ROOT/{workspace}/{launcher}" "$@"
 """.format(
             workspace = workspace,
-            manifest  = worker_info.manifest.short_path,
+            manifest  = manifest.short_path,
             launcher  = ctx.file.launcher.short_path,
             test_bin  = ctx.attr.test_binary.files_to_run.executable.short_path,
         ),
@@ -53,16 +114,27 @@ exec python3 "$RUNFILES_ROOT/{workspace}/{launcher}" "$@"
         ),
     ]
 
+
 _temporal_launcher_test = rule(
     implementation = _temporal_launcher_impl,
     test = True,
     doc  = "Internal rule. Use the temporal_test macro instead.",
     attrs = {
+        "history": attr.label(
+            default   = None,
+            providers = [TemporalWorkflowHistoryInfo],
+            doc = "Optional temporal_workflow_history target for pre-committed history replay.",
+        ),
         "launcher": attr.label(
             default = Label("//private:launcher.py"),
             allow_single_file = True,
             executable = False,
             doc = "The Python launcher script.",
+        ),
+        "namespace_config": attr.label(
+            default   = None,
+            providers = [TemporalNamespaceConfigInfo],
+            doc = "Optional temporal_namespace_config target for custom search attributes.",
         ),
         "test_binary": attr.label(
             mandatory = True,
@@ -91,30 +163,36 @@ def temporal_test(
         timeout = None,
         tags = None,
         test_rule = None,
+        namespace_config = None,
+        history = None,
         **kwargs):
     """Macro: runs a test against an ephemeral Temporal cluster.
 
     Wraps any *_test rule (default: sh_test) with a launcher that:
       1. Starts temporal server start-dev on a free port
       2. Creates a unique, isolated namespace for this test run
-      3. Starts the declared worker binary
-      4. Waits until the worker is polling the task queue
-      5. Validates declared workflow/activity types match the running worker
-      6. Exports TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE
-      7. exec's the wrapped test binary
-      8. Tears down the worker and server on exit
+      3. Registers custom search attributes (if namespace_config is given)
+      4. Starts the declared worker binary
+      5. Waits until the worker is polling the task queue
+      6. Validates declared workflow/activity types match the running worker
+      7. Replays committed workflow histories (if history is given)
+      8. Exports TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE, TEMPORAL_TASK_QUEUE
+      9. exec's the wrapped test binary
+     10. Tears down the worker and server on exit
 
     Args:
-        name:        Target name.
-        worker:      Label of a temporal_build target (required).
-        srcs:        Test source files (forwarded to test_rule).
-        deps:        Test dependencies (forwarded to test_rule).
-        size:        Bazel test size. Default "medium".
-        timeout:     Bazel test timeout override.
-        tags:        Extra tags.
-        test_rule:   The *_test rule for the inner test binary.
-                     Defaults to native.sh_test.
-        **kwargs:    Remaining kwargs forwarded to test_rule.
+        name:             Target name.
+        worker:           Label of a temporal_build target (required).
+        srcs:             Test source files (forwarded to test_rule).
+        deps:             Test dependencies (forwarded to test_rule).
+        size:             Bazel test size. Default "medium".
+        timeout:          Bazel test timeout override.
+        tags:             Extra tags.
+        test_rule:        The *_test rule for the inner test binary.
+                          Defaults to native.sh_test.
+        namespace_config: Optional label of a temporal_namespace_config target.
+        history:          Optional label of a temporal_workflow_history target.
+        **kwargs:         Remaining kwargs forwarded to test_rule.
     """
     srcs  = srcs  or []
     deps  = deps  or []
@@ -133,10 +211,12 @@ def temporal_test(
 
     # 2. Wrap it with the Temporal launcher.
     _temporal_launcher_test(
-        name        = name,
-        worker      = worker,
-        test_binary = ":" + inner_name,
-        size        = size,
-        timeout     = timeout,
-        tags        = tags,
+        name             = name,
+        worker           = worker,
+        test_binary      = ":" + inner_name,
+        size             = size,
+        timeout          = timeout,
+        tags             = tags,
+        namespace_config = namespace_config,
+        history          = history,
     )
