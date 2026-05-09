@@ -20,9 +20,17 @@ py_binary(
     srcs           = ["workers/hello_worker.py"],
     main           = "workers/hello_worker.py",
     python_version = "PY3",
-    # v0.3 install smoke also runs this worker against a deployed
-    # cluster (host-side, via port-forward).
-    visibility     = ["//tests:__pkg__", "//tests/install_smoke:__pkg__"],
+    visibility     = ["//tests:__pkg__"],
+)
+
+# v0.3 install smoke runs the worker host-side via system `python3`
+# (bazel's hermetic Python toolchain can't see host-pip-installed
+# `temporalio`). Expose the source so the smoke's sh_test can stage
+# it into runfiles without going through the py_binary launcher.
+filegroup(
+    name       = "hello_worker_py_src",
+    srcs       = ["workers/hello_worker.py"],
+    visibility = ["//tests/install_smoke:__pkg__"],
 )
 
 temporal_build(

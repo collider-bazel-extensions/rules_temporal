@@ -51,8 +51,21 @@ _resolve() {
 
 CLUSTER_YAML="$(_resolve tests/install_smoke/cluster.yaml)" \
     || { echo "smoke: cluster.yaml not in runfiles" >&2; exit 1; }
-WORKER_BIN="$(_resolve tests/hello_worker_bin)" \
-    || { echo "smoke: hello_worker_bin not in runfiles" >&2; exit 1; }
+# v0.3 install smoke runs the worker host-side via system `python3`
+# rather than the rules_python `py_binary` shape — bazel's hermetic
+# Python interpreter doesn't see system `pip install` packages, so
+# the py_binary form would fail to import `temporalio`. Resolving
+# the .py source out of runfiles (it ships as the py_binary's
+# `srcs`) and invoking `python3` against it sidesteps the toolchain
+# entirely; consumers only need `pip install temporalio` on the
+# host.
+WORKER_PY="$(_resolve tests/workers/hello_worker.py)" \
+    || { echo "smoke: tests/workers/hello_worker.py not in runfiles" >&2; exit 1; }
+
+command -v python3 >/dev/null 2>&1 || {
+  echo "smoke: \`python3\` not on PATH (host-side worker requires it + 'pip install temporalio')" >&2
+  exit 1
+}
 
 command -v temporal >/dev/null 2>&1 || {
   echo "smoke: \`temporal\` not on PATH. Install from https://temporal.io/setup/install-temporal-cli" >&2
@@ -122,15 +135,37 @@ fi
 
 # Start the hello worker in the background, pointed at the
 # port-forwarded Frontend.
-echo "smoke: starting hello_worker_bin"
+echo "smoke: starting hello_worker.py via system python3"
 TEMPORAL_ADDRESS=localhost:7233 \
 TEMPORAL_NAMESPACE="$TEMPORAL_NS" \
 TEMPORAL_TASK_QUEUE="$TASK_QUEUE" \
-    "$WORKER_BIN" >/tmp/worker.log 2>&1 &
+    python3 "$WORKER_PY" >/tmp/worker.log 2>&1 &
 WORKER_PID=$!
 
-# Give the worker a moment to register with Temporal.
-sleep 5
+# Wait for the worker to print its readiness line. Without this,
+# any import / connect failure leaves `temporal workflow execute`
+# hanging until the test timeout (an opaque 30-min stall) — bail
+# fast with the worker log instead.
+echo "smoke: waiting for worker to register"
+deadline=$(( $(date +%s) + 30 ))
+while (( $(date +%s) < deadline )); do
+  if grep -q "polling '$TASK_QUEUE'" /tmp/worker.log 2>/dev/null; then
+    break
+  fi
+  if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+    echo "smoke: FAIL — hello_worker_bin exited before polling task queue" >&2
+    echo "---- worker logs ----" >&2
+    cat /tmp/worker.log >&2 || true
+    exit 1
+  fi
+  sleep 1
+done
+if ! grep -q "polling '$TASK_QUEUE'" /tmp/worker.log 2>/dev/null; then
+  echo "smoke: FAIL — worker never reported polling within 30s" >&2
+  echo "---- worker logs ----" >&2
+  cat /tmp/worker.log >&2 || true
+  exit 1
+fi
 
 # Submit + execute a workflow synchronously. The CLI returns the
 # workflow result on stdout once the worker completes it.

@@ -103,11 +103,15 @@ sh_test(
     srcs = ["smoke_test.sh"],
     data = [
         "cluster.yaml",
-        # Reuses v0.1's hello_worker_bin (Python worker that reads
+        # Reuses v0.1's hello_worker.py source (reads
         # TEMPORAL_ADDRESS / TEMPORAL_NAMESPACE / TEMPORAL_TASK_QUEUE
-        # from env). The smoke runs it host-side against a
-        # port-forwarded Frontend.
-        "//tests:hello_worker_bin",
+        # from env). The smoke invokes it host-side via system
+        # `python3` rather than the bazel py_binary — bazel's
+        # hermetic Python toolchain can't see host-pip-installed
+        # `temporalio`, so the py_binary form would fail to import.
+        # Calling system python3 against the .py source sidesteps
+        # that.
+        "//tests:hello_worker_py_src",
     ],
     tags = ["manual"],
 )
