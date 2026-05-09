@@ -1,0 +1,8 @@
+"""Maintainer-only: temporal-operator manifests are curled +
+concatenated (CRDs first, then non-CRDs operator manifest), no
+bazel render target needed (mirrors rules_tekton + rules_spicedb)."""
+
+exports_files([
+    "render_temporal_operator.sh",
+    "versions.bzl",
+])

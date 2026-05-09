@@ -1,12 +1,21 @@
 # rules_temporal
 
-Bazel rules for running integration tests against an ephemeral
-[Temporal](https://temporal.io) cluster. Every test target gets its own
-`temporal server start-dev` process on a dynamically allocated port with a
-UUID-based namespace — no shared state, no leftover history, full
-`--jobs` parallelism.
+Bazel rules for [Temporal](https://temporal.io) — two families of
+primitives:
+
+- **Test-time** (v0.1/v0.2): hermetic, parallel-safe Temporal
+  instances via `temporal server start-dev`. Every test target
+  gets its own server + UUID namespace.
+- **Install-time** (v0.3): `temporal_install` /
+  `temporal_install_health_check` deploys
+  [alexandrevilain/temporal-operator](https://github.com/alexandrevilain/temporal-operator)
+  to a real cluster. Drops into `itest_service.exe` /
+  `.health_check`. Sibling to the test primitives in the same
+  package.
 
 ## Features
+
+### Test-time (v0.1/v0.2)
 
 - **Hermetic** — each `temporal_test` owns an independent server and namespace;
   no shared state between test targets.
@@ -24,6 +33,24 @@ UUID-based namespace — no shared state, no leftover history, full
 - **rules_itest integration** — `temporal_server` and `temporal_health_check` slot
   directly into multi-service integration tests.
 
+### Install-time (v0.3)
+
+- **`temporal_install`** — `kubectl_apply` over a vendored
+  `alexandrevilain/temporal-operator` bundle (CRDs + non-CRDs
+  manifest concatenated at maintainer-render time). Wait shape:
+  `temporal-operator-controller-manager` Deployment + 4 CRDs
+  (`TemporalCluster`, `TemporalNamespace`, `TemporalSchedule`,
+  `TemporalClusterClient`). Pinned to operator `v0.22.0`.
+- **`temporal_install_health_check`** — paired readiness probe (named
+  with `_install_` to avoid colliding with the test-time
+  `temporal_health_check`).
+- **cert-manager required upstream** — operator's manifest
+  includes `Certificate` + `Issuer` CRs; install
+  [`rules_certmanager`](https://github.com/collider-bazel-extensions/rules_certmanager)'s
+  `cert_manager_install` ahead of `temporal_install` via
+  `itest_service.deps`.
+- See [Install primitives](#install-primitives) below for usage.
+
 ## Requirements
 
 - Bazel 6+ (Bzlmod or WORKSPACE)
@@ -35,7 +62,7 @@ UUID-based namespace — no shared state, no leftover history, full
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.2.0")
+bazel_dep(name = "rules_temporal", version = "0.3.0")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
@@ -124,6 +151,143 @@ temporal_test(
 ```sh
 bazel test //mypackage:my_test
 ```
+
+## Install primitives
+
+For deploying Temporal itself to a Kubernetes cluster (vs running
+ephemeral instances in tests), v0.3 adds install-time primitives.
+
+### `temporal_install`
+
+Vendors and applies the
+[`alexandrevilain/temporal-operator`](https://github.com/alexandrevilain/temporal-operator)
+manifests (CRDs + non-CRDs concatenated). The operator reconciles
+consumer-authored `TemporalCluster` and `TemporalNamespace` CRs
+into the actual Temporal services (frontend, history, matching,
+worker, internal-frontend) backed by Postgres or Cassandra.
+
+```python
+load("@rules_temporal//:defs.bzl",
+     "temporal_install", "temporal_install_health_check")
+
+temporal_install(
+    name = "temporal_install_bin",
+    namespace = "temporal-system",   # default
+    wait_timeout = "300s",           # default
+)
+
+temporal_install_health_check(
+    name = "temporal_install_health_bin",
+)
+```
+
+### Required upstream: cert-manager
+
+The operator's manifest includes a `Certificate` + `Issuer` CR
+(cert-manager.io/v1) for its admission webhook serving cert.
+**cert-manager must be installed first** — install via
+[`rules_certmanager`](https://github.com/collider-bazel-extensions/rules_certmanager)
+and chain through `itest_service.deps`:
+
+```python
+load("@rules_certmanager//:defs.bzl", "cert_manager_install", "cert_manager_health_check")
+load("@rules_kind//:defs.bzl", "kind_cluster", "kind_health_check")
+load("@rules_itest//:itest.bzl", "itest_service")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_temporal//:defs.bzl", "temporal_install", "temporal_install_health_check")
+
+kind_cluster(name = "cluster", k8s_version = "1.32")
+kind_health_check(name = "cluster_health", cluster = ":cluster")
+itest_service(name = "kind_svc", exe = ":cluster", health_check = ":cluster_health")
+
+cert_manager_install(name = "cert_manager_install_bin")
+cert_manager_health_check(name = "cert_manager_install_health_bin")
+sh_binary(name = "cert_manager_install_wrapper", srcs = ["cm_wrapper.sh"], data = [":cert_manager_install_bin"])
+sh_binary(name = "cert_manager_install_health_wrapper", srcs = ["cm_health_wrapper.sh"], data = [":cert_manager_install_health_bin"])
+itest_service(
+    name = "cert_manager_svc",
+    exe = ":cert_manager_install_wrapper",
+    deps = [":kind_svc"],
+    health_check = ":cert_manager_install_health_wrapper",
+)
+
+temporal_install(name = "temporal_install_bin")
+temporal_install_health_check(name = "temporal_install_health_bin")
+sh_binary(name = "temporal_install_wrapper", srcs = ["t_wrapper.sh"], data = [":temporal_install_bin"])
+sh_binary(name = "temporal_install_health_wrapper", srcs = ["t_health_wrapper.sh"], data = [":temporal_install_health_bin"])
+itest_service(
+    name = "temporal_install_svc",
+    exe = ":temporal_install_wrapper",
+    deps = [":cert_manager_svc"],     # 4-link chain: kind → cert-manager → temporal-operator
+    health_check = ":temporal_install_health_wrapper",
+)
+```
+
+After `temporal_install_svc` is healthy, consumers apply their
+own `TemporalCluster` + `TemporalNamespace` CRs:
+
+```yaml
+apiVersion: temporal.io/v1beta1
+kind: TemporalCluster
+metadata:
+  name: my-cluster
+  namespace: my-app
+spec:
+  version: 1.24.3
+  numHistoryShards: 1
+  persistence:
+    defaultStore:
+      sql:
+        user: temporal
+        pluginName: postgres12
+        databaseName: temporal
+        connectAddr: postgres.my-app.svc.cluster.local:5432
+        connectProtocol: tcp
+      passwordSecretRef:
+        name: postgres-password
+        key: PASSWORD
+    visibilityStore:
+      sql:
+        # ... same shape, different database name
+---
+apiVersion: temporal.io/v1beta1
+kind: TemporalNamespace
+metadata:
+  name: my-namespace
+  namespace: my-app
+spec:
+  clusterRef:
+    name: my-cluster
+  retentionPeriod: 24h
+```
+
+The operator reconciles each `TemporalCluster` into 5 Services +
+Deployments (`<name>-frontend`, `-history`, `-matching`,
+`-worker`, `-internal-frontend`) and runs schema migrations
+against the configured database. `TemporalNamespace` triggers a
+one-shot Job that calls `temporal operator namespace create`
+against the cluster's admin API.
+
+> **`TemporalCluster` CRD reference**: see
+> [alexandrevilain/temporal-operator examples](https://github.com/alexandrevilain/temporal-operator/tree/main/examples).
+> The smoke fixture in `tests/install_smoke/cluster.yaml` shows
+> the minimal hand-rolled-Postgres shape used by the in-tree CI.
+
+### Production-shape backend
+
+The smoke uses a hand-rolled `postgres:16-alpine` Deployment for
+simplicity (single replica, ephemeral). Real production uses
+managed Postgres or Cassandra — compose with
+[`rules_cloudnativepg`](https://github.com/collider-bazel-extensions/rules_cloudnativepg)
+or a managed-DB bring-your-own pattern.
+
+### Naming asymmetry
+
+Install primitives are named `temporal_install` /
+`temporal_install_health_check` (not `temporal_health_check`) to
+avoid colliding with v0.1/v0.2's `temporal_health_check`, which
+pairs with the test-time `temporal_server`. Both health checks
+coexist; pick the one matching your install vs test composition.
 
 ## Public API
 

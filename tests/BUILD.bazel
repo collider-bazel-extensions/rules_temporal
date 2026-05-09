@@ -20,7 +20,9 @@ py_binary(
     srcs           = ["workers/hello_worker.py"],
     main           = "workers/hello_worker.py",
     python_version = "PY3",
-    visibility     = ["//visibility:private"],
+    # v0.3 install smoke also runs this worker against a deployed
+    # cluster (host-side, via port-forward).
+    visibility     = ["//tests:__pkg__", "//tests/install_smoke:__pkg__"],
 )
 
 temporal_build(

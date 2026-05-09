@@ -1,0 +1,144 @@
+# Smoke fixture for the install-path E2E.
+#
+# Three resources:
+#   1. Hand-rolled Postgres (Deployment + Service + Secret).
+#      temporal-operator requires a real DB — sqlite isn't a
+#      supported persistence backend. v0.4 candidate: compose with
+#      rules_cloudnativepg for production-shape postgres.
+#   2. TemporalCluster pointing at the postgres Service.
+#      operator reconciles into ~5 Services + Deployments
+#      (frontend, history, matching, worker, internal-frontend).
+#   3. TemporalNamespace registered against the cluster.
+#      operator runs a one-shot Job to register the namespace via
+#      `temporal operator namespace create` against the admin API.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: temporal-smoke
+---
+# Postgres credentials Secret, referenced by both the Postgres pod
+# (POSTGRES_PASSWORD env) and the TemporalCluster's persistence
+# stanza (passwordSecretRef.key=PASSWORD).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: temporal-smoke
+type: Opaque
+stringData:
+  PASSWORD: smoke-fixture-postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: temporal-smoke
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: temporal-smoke
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: temporal
+            - name: POSTGRES_DB
+              value: temporal
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, temporal, -d, temporal]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: temporal.io/v1beta1
+kind: TemporalCluster
+metadata:
+  name: smoke
+  namespace: temporal-smoke
+spec:
+  version: 1.24.3
+  numHistoryShards: 1
+  persistence:
+    defaultStore:
+      sql:
+        user: temporal
+        pluginName: postgres12
+        databaseName: temporal
+        connectAddr: postgres.temporal-smoke.svc.cluster.local:5432
+        connectProtocol: tcp
+      passwordSecretRef:
+        name: postgres-credentials
+        key: PASSWORD
+    visibilityStore:
+      sql:
+        user: temporal
+        pluginName: postgres12
+        databaseName: temporal_visibility
+        connectAddr: postgres.temporal-smoke.svc.cluster.local:5432
+        connectProtocol: tcp
+      passwordSecretRef:
+        name: postgres-credentials
+        key: PASSWORD
+  mTLS:
+    provider: cert-manager
+    internode:
+      enabled: false
+    frontend:
+      enabled: false
+  ui:
+    enabled: false
+  admintools:
+    enabled: false
+---
+apiVersion: temporal.io/v1beta1
+kind: TemporalNamespace
+metadata:
+  name: smoke-ns
+  namespace: temporal-smoke
+spec:
+  clusterRef:
+    name: smoke
+  retentionPeriod: 24h

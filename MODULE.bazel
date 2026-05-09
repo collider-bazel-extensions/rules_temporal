@@ -1,6 +1,6 @@
 module(
     name = "rules_temporal",
-    version = "0.2.1",
+    version = "0.3.0",
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.5.0")
@@ -12,6 +12,16 @@ bazel_dep(name = "platforms", version = "0.0.9")
 # transitively need rules_shell unless they override
 # `test_rule = ...`.
 bazel_dep(name = "rules_shell", version = "0.8.0")
+
+# v0.3: cluster-deploy primitives (`temporal_install` /
+# `temporal_install_health_check`) compose with rules_kubectl's
+# kubectl_apply.
+bazel_dep(name = "rules_kubectl", version = "0.2.0")
+git_override(
+    module_name = "rules_kubectl",
+    remote = "https://github.com/collider-bazel-extensions/rules_kubectl",
+    commit = "81b60ab80df46b64c612f2576ffef0a7af98ccb6",  # v0.2.0
+)
 
 # rules_python is dev-only — used only by the in-tree
 # tests/BUILD.bazel's py_binary worker fixtures (Bazel 8+ removed
@@ -28,3 +38,39 @@ use_repo(temporal,
     "temporal_1_6_2_darwin_arm64",
     "temporal_1_6_2_darwin_amd64",
 )
+
+# ---- dev-only: install-smoke composition -----------------------------------
+bazel_dep(name = "rules_itest", version = "0.0.52", dev_dependency = True)
+
+bazel_dep(name = "rules_kind", version = "0.1.2", dev_dependency = True)
+git_override(
+    module_name = "rules_kind",
+    remote = "https://github.com/collider-bazel-extensions/rules_kind",
+    commit = "b9c4670646f8e3772816f56a048e311d5310a763",  # v0.1.2
+)
+
+# cert-manager is required upstream of temporal-operator — operator's
+# manifest includes a `Certificate` CR + `Issuer` CR for its admission
+# webhook serving cert. Smoke composes rules_certmanager's
+# cert_manager_install before temporal_install.
+bazel_dep(name = "rules_certmanager", version = "0.1.2", dev_dependency = True)
+git_override(
+    module_name = "rules_certmanager",
+    remote = "https://github.com/collider-bazel-extensions/rules_certmanager",
+    commit = "bff7f86589c7a58a42a989f08cb098d790963f06",  # v0.1.2
+)
+
+# rules_certmanager's module extension is gated on `mod.is_root`
+# (the canonical pattern across the family — prevents @cert_manager
+# repo collision when consumed transitively). rules_temporal is the
+# root here, so we invoke `cert_manager.version()` ourselves to
+# materialize the @cert_manager repo that the install macro
+# references.
+cert_manager = use_extension(
+    "@rules_certmanager//:extensions.bzl",
+    "cert_manager",
+    dev_dependency = True,
+)
+cert_manager.version(name = "cert_manager", version = "1.18.3")
+use_repo(cert_manager, "cert_manager")
+register_toolchains("@cert_manager//:all", dev_dependency = True)

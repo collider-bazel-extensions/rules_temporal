@@ -1,0 +1,124 @@
+"""Full E2E install smoke for temporal_install / temporal_install_health_check.
+
+Composition (4-link itest dep chain):
+  kind_svc → cert_manager_svc → temporal_install_svc → smoke_test
+
+Smoke applies a TemporalCluster + TemporalNamespace, waits for
+both to be Ready, port-forwards Frontend gRPC to localhost,
+runs the hello_worker_bin (existing v0.1 worker) in the
+background, and `temporal workflow execute`s a HelloWorkflow
+asserting the result is "Hello, world!".
+"""
+
+load("@rules_certmanager//:defs.bzl", "cert_manager_health_check", "cert_manager_install")
+load("@rules_itest//:itest.bzl", "itest_service", "service_test")
+load("@rules_kind//:defs.bzl", "kind_cluster", "kind_health_check")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_temporal//:defs.bzl", "temporal_install", "temporal_install_health_check")
+
+kind_cluster(name = "cluster", k8s_version = "1.32")
+
+kind_health_check(name = "cluster_health", cluster = ":cluster")
+
+itest_service(
+    name = "kind_svc",
+    exe = ":cluster",
+    health_check = ":cluster_health",
+    tags = ["manual"],
+)
+
+# ---- cert-manager (precondition for temporal-operator) ---------------------
+# The operator's manifest includes a Certificate + Issuer CR for
+# its admission webhook serving cert. Apply cert-manager first so
+# its CRDs exist before the operator manifest's apply-time
+# validation.
+
+cert_manager_install(
+    name = "cert_manager_install_bin",
+    tags = ["manual"],
+)
+
+cert_manager_health_check(
+    name = "cert_manager_install_health_bin",
+    tags = ["manual"],
+)
+
+sh_binary(
+    name = "cert_manager_install_wrapper",
+    srcs = ["cert_manager_install_wrapper.sh"],
+    data = [":cert_manager_install_bin"],
+)
+
+sh_binary(
+    name = "cert_manager_install_health_wrapper",
+    srcs = ["cert_manager_health_wrapper.sh"],
+    data = [":cert_manager_install_health_bin"],
+)
+
+itest_service(
+    name = "cert_manager_svc",
+    exe = ":cert_manager_install_wrapper",
+    deps = [":kind_svc"],
+    health_check = ":cert_manager_install_health_wrapper",
+    tags = ["manual"],
+)
+
+# ---- temporal-operator install (depends on cert-manager) -------------------
+
+temporal_install(
+    name = "temporal_install_bin",
+    tags = ["manual"],
+)
+
+temporal_install_health_check(
+    name = "temporal_install_health_bin",
+    tags = ["manual"],
+)
+
+sh_binary(
+    name = "temporal_install_wrapper",
+    srcs = ["install_wrapper.sh"],
+    data = [":temporal_install_bin"],
+)
+
+sh_binary(
+    name = "temporal_install_health_wrapper",
+    srcs = ["health_wrapper.sh"],
+    data = [":temporal_install_health_bin"],
+)
+
+itest_service(
+    name = "temporal_install_svc",
+    exe = ":temporal_install_wrapper",
+    deps = [":cert_manager_svc"],
+    health_check = ":temporal_install_health_wrapper",
+    tags = ["manual"],
+)
+
+# ---- smoke -----------------------------------------------------------------
+
+sh_test(
+    name = "smoke_test_bin",
+    srcs = ["smoke_test.sh"],
+    data = [
+        "cluster.yaml",
+        # Reuses v0.1's hello_worker_bin (Python worker that reads
+        # TEMPORAL_ADDRESS / TEMPORAL_NAMESPACE / TEMPORAL_TASK_QUEUE
+        # from env). The smoke runs it host-side against a
+        # port-forwarded Frontend.
+        "//tests:hello_worker_bin",
+    ],
+    tags = ["manual"],
+)
+
+service_test(
+    name = "smoke_test",
+    services = [":temporal_install_svc"],
+    test = ":smoke_test_bin",
+    tags = [
+        "manual",
+        "no-sandbox",
+        "requires-network",
+    ],
+)

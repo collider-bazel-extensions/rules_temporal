@@ -1,0 +1,95 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  analysis:
+    name: bazel test (ubuntu-latest, analysis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-analysis
+          repository-cache: true
+
+      # The system-mode `temporal` toolchain looks for `temporal` on
+      # $PATH. Install it so analysis of the test-time targets passes.
+      - name: Install temporal CLI
+        run: |
+          set -euo pipefail
+          curl -sSf https://temporal.download/cli.sh | sh
+          sudo cp ~/.temporalio/bin/temporal /usr/local/bin/temporal
+          temporal --version
+
+      # `bazel build //...` analyzes ALL platforms' temporal_binary
+      # toolchain repos, including darwin_arm64 which can't be
+      # populated on a linux runner (system extension symlinks the
+      # host's binary, so cross-platform repos stay empty). Target
+      # specific paths instead. Same lesson rules_spicedb learned.
+      - name: bazel build (linux + smoke targets)
+        run: |
+          bazel build \
+            //:temporal_default \
+            //tests/install_smoke:smoke_test
+
+      - name: bazel test (analysis only, linux targets)
+        run: |
+          bazel test //tests/... \
+              --test_tag_filters=-manual \
+              --test_output=errors
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-testlogs-analysis
+          path: bazel-testlogs/
+          if-no-files-found: ignore
+
+  install_smoke:
+    # Full E2E install smoke: kind + cert-manager + temporal-operator
+    # + TemporalCluster (postgres-backed) + TemporalNamespace +
+    # host-side hello_worker (Python) + `temporal workflow execute`.
+    name: install smoke (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-install-smoke
+          repository-cache: true
+
+      - name: Install temporal CLI
+        run: |
+          set -euo pipefail
+          curl -sSf https://temporal.download/cli.sh | sh
+          sudo cp ~/.temporalio/bin/temporal /usr/local/bin/temporal
+          temporal --version
+
+      - name: Verify Docker is available
+        run: docker version
+
+      - name: bazel test //tests/install_smoke:smoke_test
+        # kind boot (~30s) + cert-manager install (~60s) +
+        # temporal-operator install (~30s) + postgres pull (~80MB) +
+        # TemporalCluster reconciliation (4 services, ~2 min) +
+        # TemporalNamespace registration + workflow execution.
+        # Bumped beyond the typical 900s for the cluster
+        # reconciliation.
+        run: bazel test //tests/install_smoke:smoke_test --test_output=streamed --test_timeout=1800
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-testlogs-install-smoke
+          path: bazel-testlogs/
+          if-no-files-found: ignore
