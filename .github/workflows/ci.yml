@@ -89,7 +89,11 @@ jobs:
       - name: Install temporalio Python SDK
         run: |
           set -euo pipefail
-          sudo python3 -m pip install --break-system-packages 'temporalio>=1.7,<2'
+          # `--ignore-installed` skips pip's attempt to uninstall
+          # debian-managed typing_extensions (which has no RECORD
+          # file and would abort the install).
+          sudo python3 -m pip install --break-system-packages --ignore-installed \
+              'temporalio>=1.7,<2'
           python3 -c 'import temporalio; print("temporalio", temporalio.__version__)'
 
       - name: bazel test //tests/install_smoke:smoke_test
