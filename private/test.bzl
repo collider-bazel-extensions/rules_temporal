@@ -1,5 +1,6 @@
 "temporal_test macro and _temporal_launcher_test rule."
 
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//private:binary.bzl", "TemporalBinaryInfo")
 load("//private:worker.bzl", "TemporalWorkerInfo")
 load("//private:namespace_config.bzl", "TemporalNamespaceConfigInfo")
@@ -197,7 +198,11 @@ def temporal_test(
     srcs  = srcs  or []
     deps  = deps  or []
     tags  = tags  or []
-    _test_rule = test_rule or native.sh_test
+    # Bazel 8+ removed `native.sh_test`, so the default has to load
+    # from rules_shell. Consumers can override `test_rule = ...` to
+    # point at another *_test rule (py_test, go_test, etc.) if they
+    # don't want rules_shell as a transitive dep.
+    _test_rule = test_rule or sh_test
 
     # 1. Build the inner test binary (no Temporal awareness).
     inner_name = name + "_inner"

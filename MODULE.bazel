@@ -1,11 +1,22 @@
 module(
     name = "rules_temporal",
-    version = "0.2.0",
-    compatibility_level = 1,
+    version = "0.2.1",
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.5.0")
 bazel_dep(name = "platforms", version = "0.0.9")
+
+# rules_shell is part of the public surface — `temporal_test`
+# defaults to `sh_test`. Bazel 8+ removed `native.sh_test`, so
+# the macro has to import it from rules_shell. Consumers
+# transitively need rules_shell unless they override
+# `test_rule = ...`.
+bazel_dep(name = "rules_shell", version = "0.8.0")
+
+# rules_python is dev-only — used only by the in-tree
+# tests/BUILD.bazel's py_binary worker fixtures (Bazel 8+ removed
+# native py_binary). Consumers don't inherit it.
+bazel_dep(name = "rules_python", version = "1.7.0", dev_dependency = True)
 
 temporal = use_extension("//:extensions.bzl", "temporal")
 temporal.system(
