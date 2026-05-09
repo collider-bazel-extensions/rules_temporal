@@ -45,7 +45,11 @@ curl -sLfo "$tmp_op" "$operator_url"
 echo "$operator_sha  $tmp_op" | sha256sum -c >/dev/null
 
 dest="private/manifests/temporal_operator.yaml"
-cat "$tmp_crds" "$tmp_op" > "$dest"
+# Insert `---` between the two upstream files. crds.yaml doesn't
+# end with `---`, so a naive cat merges the trailing CRD's last
+# fields (`.spec.group` etc.) into the next doc's Namespace, which
+# kubectl rejects with "field not declared in schema".
+{ cat "$tmp_crds"; printf '\n---\n'; cat "$tmp_op"; } > "$dest"
 
 echo "render_temporal_operator: wrote $dest"
 echo "  version: $VERSION"
