@@ -33,25 +33,18 @@ jobs:
       # populated on a linux runner (system extension symlinks the
       # host's binary, so cross-platform repos stay empty). Target
       # specific paths instead. Same lesson rules_spicedb learned.
+      #
+      # `bazel build` (vs test) on the smoke target loads + analyzes
+      # the install_smoke package's BUILD.bazel without trying to run
+      # anything — every install_smoke target is manual-tagged, and
+      # the pre-existing //tests:hello_test etc. are
+      # `temporal_test`-wrapped Python tests that need the
+      # `temporalio` SDK pip-installed (out of scope for v0.3).
       - name: bazel build (linux + smoke targets)
         run: |
           bazel build \
             //:temporal_default \
             //tests/install_smoke:smoke_test
-
-      # Only run analysis tests under //tests/install_smoke/...
-      # The pre-existing test-time targets (//tests:hello_test, etc.)
-      # are temporal_test-wrapped Python tests that import the
-      # `temporalio` SDK; CI doesn't pip-install Python deps, so
-      # those need a separate workflow (out of scope for v0.3 install).
-      # The install_smoke service_tests are all manual-tagged anyway
-      # so this skips them — but it still loads + analyzes the
-      # install_smoke package's BUILD.bazel.
-      - name: bazel test (analysis only, install_smoke targets)
-        run: |
-          bazel test //tests/install_smoke/... \
-              --test_tag_filters=-manual \
-              --test_output=errors
 
       - name: Upload test logs on failure
         if: failure()
@@ -84,6 +77,18 @@ jobs:
 
       - name: Verify Docker is available
         run: docker version
+
+      # Worker (tests/workers/hello_worker.py) imports the
+      # `temporalio` Python SDK. The worker is launched directly from
+      # smoke_test.sh (host-side, against the port-forwarded
+      # Frontend), which deliberately does NOT override HOME so the
+      # py_binary can find user-installed packages (cf. comment in
+      # private/launcher.py). System pip-install matches that
+      # contract.
+      - name: Install temporalio Python SDK
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user 'temporalio>=1.7,<2'
 
       - name: bazel test //tests/install_smoke:smoke_test
         # kind boot (~30s) + cert-manager install (~60s) +
