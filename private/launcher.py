@@ -266,32 +266,61 @@ def _replay_histories(replay_runner: str,
                        workflow_module: str,
                        workflow_types: list[str],
                        history_files: list[str],
+                       custom_replay_runner: str = "",
                        tmp_dir: str = "") -> None:
-    """Replay committed workflow history files via the SDK Replayer.
+    """Replay committed workflow history files.
 
-    Invokes `private/replay_runner.py` once per history file as a
-    subprocess. The CLI `temporal workflow replay --workflow-file`
-    subcommand was removed upstream — replay is now SDK-only — so the
-    runner dynamic-loads the worker's `workflow_module` (a .py file)
-    and calls `temporalio.worker.Replayer.replay_workflow` against
-    each history JSON.
+    Two paths:
+
+      1. `custom_replay_runner` (non-Python workers): execute
+         `<custom_replay_runner> <history_file>` directly. Consumer-
+         authored — knows how to load its language's workflow code
+         and call the right Replayer. Argv contract: single
+         positional history-file path; exit 0 on success, non-zero
+         on non-determinism.
+
+      2. Built-in Python runner (Python workers): execute
+         `python3 private/replay_runner.py <workflow_module>
+         <history_file> <class_names_csv>`. Requires
+         `workflow_module` on temporal_build + system-pip-installed
+         `temporalio`.
     """
     if not history_files:
         return
-    if not workflow_module:
-        raise RuntimeError(
-            "history replay requires the `workflow_module` attribute on "
-            "temporal_build. Set it to the .py file containing your "
-            "workflow class definitions (the same names listed in "
-            "`workflow_types`)."
-        )
+
     env = os.environ.copy()
     if tmp_dir:
         env["HOME"]   = tmp_dir
         env["TMPDIR"] = tmp_dir
+
+    if custom_replay_runner:
+        for history_file in history_files:
+            _log(f"Replaying workflow history (custom runner): {history_file}")
+            result = subprocess.run(
+                [custom_replay_runner, history_file],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            if result.returncode != 0:
+                out = result.stdout.decode("utf-8", errors="replace")
+                err = result.stderr.decode("utf-8", errors="replace")
+                raise RuntimeError(
+                    f"Workflow history replay failed for {history_file}:\n"
+                    f"stdout:\n{out}\nstderr:\n{err}"
+                )
+        return
+
+    if not workflow_module:
+        raise RuntimeError(
+            "history replay requires either `workflow_module` "
+            "(built-in Python runner) or `replay_runner` (custom runner "
+            "for non-Python workers) on temporal_build. See README "
+            "\"Custom replay runners\" for language-specific examples."
+        )
     class_names_csv = ",".join(workflow_types)
     for history_file in history_files:
-        _log(f"Replaying workflow history: {history_file}")
+        _log(f"Replaying workflow history (Python runner): {history_file}")
         result = subprocess.run(
             ["python3", replay_runner,
              workflow_module, history_file, class_names_csv],
@@ -400,6 +429,8 @@ def main_test(m: dict, workspace: str) -> None:
     workflow_module = _find_runfile(workflow_module_rel, workspace) if workflow_module_rel else ""
     replay_runner_rel = m.get("replay_runner", "")
     replay_runner = _find_runfile(replay_runner_rel, workspace) if replay_runner_rel else ""
+    custom_replay_runner_rel = m.get("custom_replay_runner", "")
+    custom_replay_runner = _find_runfile(custom_replay_runner_rel, workspace) if custom_replay_runner_rel else ""
 
     _ensure_executable(temporal_bin)
     _ensure_executable(worker_bin)
@@ -485,6 +516,7 @@ def main_test(m: dict, workspace: str) -> None:
         try:
             _replay_histories(replay_runner, workflow_module,
                               workflow_types, history_files,
+                              custom_replay_runner=custom_replay_runner,
                               tmp_dir=test_tmpdir)
         except RuntimeError as exc:
             _log(str(exc))
@@ -505,8 +537,13 @@ def main_test(m: dict, workspace: str) -> None:
     # Expose the resolved replay-runner + workflow-module paths so test
     # scripts that capture a history at runtime can invoke replay
     # themselves (no need to re-resolve the launcher's runfiles).
+    # TEMPORAL_REPLAY_RUNNER is the BUILT-IN Python runner;
+    # TEMPORAL_CUSTOM_REPLAY_RUNNER (if set on temporal_build) is the
+    # consumer's custom binary — argv contract `<history_file>`.
     if replay_runner:
         env["TEMPORAL_REPLAY_RUNNER"] = replay_runner
+    if custom_replay_runner:
+        env["TEMPORAL_CUSTOM_REPLAY_RUNNER"] = custom_replay_runner
     if workflow_module:
         env["TEMPORAL_WORKFLOW_MODULE"] = workflow_module
     if workflow_types:

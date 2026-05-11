@@ -62,7 +62,7 @@ primitives:
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.3.2")
+bazel_dep(name = "rules_temporal", version = "0.4.0")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
@@ -325,7 +325,78 @@ Validated at analysis time:
 - `workflow_types` must be non-empty and contain no duplicates or empty strings.
 - `activity_types` must contain no duplicates or empty strings.
 
-`workflow_module` is required only when downstream `temporal_test` targets attach a `history = ...` for SDK-based replay. The launcher subprocess-execs `private/replay_runner.py`, which dynamic-loads the `.py` and instantiates the listed `workflow_types` for `temporalio.worker.Replayer`. Requires system `python3` + system-pip-installed `temporalio` — same hermeticity contract as the rest of the worker-side path. (v0.3.1's launcher used the now-removed `temporal workflow replay --workflow-file` CLI subcommand, which fails at runtime on `temporal` v1.6+.)
+`workflow_module` is required only when downstream `temporal_test` targets attach a `history = ...` for SDK-based replay against **Python** workers. The launcher subprocess-execs `private/replay_runner.py`, which dynamic-loads the `.py` and instantiates the listed `workflow_types` for `temporalio.worker.Replayer`. Requires system `python3` + system-pip-installed `temporalio`.
+
+For **non-Python workers** (Go, TypeScript, Java, .NET, …), use `replay_runner` instead — see "Custom replay runners" below. The two attributes are mutually exclusive; `replay_runner` takes precedence when both are set.
+
+(v0.3.1's launcher used the now-removed `temporal workflow replay --workflow-file` CLI subcommand, which fails at runtime on `temporal` v1.6+; v0.3.2 added the Python SDK runner; v0.4 added the per-language extension point.)
+
+### Custom replay runners (non-Python workers)
+
+v0.4 adds an optional `replay_runner` attribute on `temporal_build` for workers in any language. The runner is a consumer-authored executable. **Contract**: takes a single positional argument `<history_file>`, exits 0 on success, non-zero on non-determinism error. That's it.
+
+```python
+temporal_build(
+    name           = "my_worker",
+    worker_binary  = ":my_worker_bin",
+    replay_runner  = ":my_replay_runner",   # consumer's binary
+    task_queue     = "my-task-queue",
+    workflow_types = ["MyWorkflow"],
+)
+```
+
+#### Go example
+
+```go
+// replay_runner.go — consumer authors this, deps on their workflow code.
+package main
+
+import (
+    "go.temporal.io/sdk/worker"
+    "github.com/my-org/my-app/workflows"
+    "os"
+)
+
+func main() {
+    if len(os.Args) != 2 {
+        os.Exit(2)
+    }
+    historyFile := os.Args[1]
+    replayer := worker.NewWorkflowReplayer()
+    replayer.RegisterWorkflow(workflows.MyWorkflow)
+    if err := replayer.ReplayWorkflowHistoryFromJSONFile(nil, historyFile); err != nil {
+        os.Exit(1)
+    }
+}
+```
+
+```python
+# BUILD.bazel
+go_binary(name = "replay_runner", srcs = ["replay_runner.go"], deps = [":workflows"])
+
+temporal_build(
+    name           = "my_worker",
+    worker_binary  = ":my_worker_bin",
+    replay_runner  = ":replay_runner",
+    workflow_types = ["MyWorkflow"],
+    task_queue     = "q",
+)
+```
+
+#### Why consumer-authored
+
+The runner needs to import the consumer's workflow code, which means linking against their specific Go (or TS/Java/etc.) library. rules_temporal can't ship a generic runner that knows about every consumer's package. The argv contract is intentionally minimal so the runner is ~20 lines per language.
+
+#### Built-in runners
+
+| Language | Built-in? | Notes |
+|---|---|---|
+| Python | ✓ | Set `workflow_module` instead — uses `private/replay_runner.py` |
+| Go | — | Use `replay_runner` with a small `go_binary` (~20 lines, example above) |
+| TypeScript | — | Use `replay_runner` with a small Node binary |
+| Java / .NET | — | Use `replay_runner` with a small JVM/.NET binary |
+
+If you'd like your language shipped as a built-in (so consumers don't need to author the runner themselves), [open an issue](https://github.com/collider-bazel-extensions/rules_temporal/issues/new) — the design is straightforward, the work is mostly authoring the language-specific runner template and wiring a `replay_runner_<lang>` macro that consumers can point at without writing their own.
 
 ### `temporal_test`
 

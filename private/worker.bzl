@@ -13,14 +13,16 @@ and the workflow/activity type names it registers.  Produced by temporal_build
 and consumed by the temporal_test launcher.
 """,
     fields = {
-        "binary_info":     "TemporalBinaryInfo: the Temporal CLI binary.",
-        "worker_binary":   "File: the worker executable.",
-        "worker_runfiles": "depset: runfiles required by the worker binary.",
-        "task_queue":      "string: task queue this worker polls.",
-        "workflow_types":  "list of strings: registered workflow type names.",
-        "activity_types":  "list of strings: registered activity type names.",
-        "workflow_module": "File or None: the .py file containing the workflow classes (used by replay_runner.py for SDK-based history replay).",
-        "manifest":        "File: JSON registration manifest (build artifact).",
+        "binary_info":            "TemporalBinaryInfo: the Temporal CLI binary.",
+        "worker_binary":          "File: the worker executable.",
+        "worker_runfiles":        "depset: runfiles required by the worker binary.",
+        "task_queue":             "string: task queue this worker polls.",
+        "workflow_types":         "list of strings: registered workflow type names.",
+        "activity_types":         "list of strings: registered activity type names.",
+        "workflow_module":        "File or None: the .py file containing the workflow classes (used by the built-in Python replay runner).",
+        "replay_runner":          "File or None: custom replay-runner executable for non-Python workers. Takes argv `<history_file>` and exits 0/non-0 based on determinism.",
+        "replay_runner_runfiles": "depset: runfiles for the custom replay_runner.",
+        "manifest":               "File: JSON registration manifest (build artifact).",
     },
 )
 
@@ -99,23 +101,45 @@ def _temporal_build_impl(ctx):
     )
 
     workflow_module = ctx.file.workflow_module if ctx.attr.workflow_module else None
+
+    # Custom replay_runner: any executable target. For non-Python
+    # workflows (Go / TypeScript / Java / …) the consumer brings
+    # their own runner — it knows how to load their workflow code
+    # and invoke their language's Replayer. Argv contract:
+    # `<history_file>`; exit 0 on success, non-zero on non-
+    # determinism.
+    replay_runner = None
+    replay_runner_runfiles = depset()
+    if ctx.attr.replay_runner:
+        replay_runner = ctx.executable.replay_runner
+        replay_runner_rf = ctx.attr.replay_runner[DefaultInfo].default_runfiles
+        if replay_runner_rf:
+            replay_runner_runfiles = replay_runner_rf.files
+
+    extra_files = []
     if workflow_module:
+        extra_files.append(workflow_module)
+    if replay_runner:
+        extra_files.append(replay_runner)
+    if extra_files:
         all_files = depset(
-            [manifest, worker_bin, workflow_module],
-            transitive = [binary_info.all_files, worker_runfiles],
+            [manifest, worker_bin] + extra_files,
+            transitive = [binary_info.all_files, worker_runfiles, replay_runner_runfiles],
         )
 
     return [
         DefaultInfo(files = all_files),
         TemporalWorkerInfo(
-            binary_info     = binary_info,
-            worker_binary   = worker_bin,
-            worker_runfiles = worker_runfiles,
-            task_queue      = task_queue,
-            workflow_types  = workflow_types,
-            activity_types  = activity_types,
-            workflow_module = workflow_module,
-            manifest        = manifest,
+            binary_info            = binary_info,
+            worker_binary          = worker_bin,
+            worker_runfiles        = worker_runfiles,
+            task_queue             = task_queue,
+            workflow_types         = workflow_types,
+            activity_types         = activity_types,
+            workflow_module        = workflow_module,
+            replay_runner          = replay_runner,
+            replay_runner_runfiles = replay_runner_runfiles,
+            manifest               = manifest,
         ),
     ]
 
@@ -168,12 +192,24 @@ Example:
             allow_single_file = [".py"],
             doc = "Optional. The .py file containing the workflow class " +
                   "definitions (the same names listed in `workflow_types`). " +
-                  "When set, `temporal_test(history = ...)` can replay " +
-                  "history files via the SDK Replayer — the launcher " +
-                  "subprocess-execs `private/replay_runner.py` with this " +
-                  "module's path. When unset, `temporal_test(history = ...)` " +
-                  "fails fast at runtime; pure `temporal_test` (no " +
-                  "`history`) still works without this attribute.",
+                  "Used by the built-in Python replay runner (Python " +
+                  "workflows only). For non-Python workers, use " +
+                  "`replay_runner` instead; both attributes are mutually " +
+                  "exclusive.",
+        ),
+        "replay_runner": attr.label(
+            executable = True,
+            cfg = "target",
+            doc = "Optional. Custom replay-runner executable for " +
+                  "non-Python workers (Go, TypeScript, Java, etc.). " +
+                  "Takes argv `<history_file>` and exits 0 on success / " +
+                  "non-zero on non-determinism. The consumer authors this " +
+                  "binary linked against their workflow code (it knows " +
+                  "which language's `Replayer` to call). When set, takes " +
+                  "precedence over `workflow_module`. " +
+                  "See README \"Custom replay runners\" for the contract " +
+                  "and language-specific examples; file an issue if you'd " +
+                  "like your language shipped as a built-in.",
         ),
         "workflow_types": attr.string_list(
             mandatory = True,

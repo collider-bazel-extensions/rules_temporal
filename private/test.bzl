@@ -46,37 +46,47 @@ def _temporal_launcher_impl(ctx):
 
     # Generate a combined manifest for this specific test target.
     # This lets the launcher pick up search_attributes, history_files,
-    # and the workflow_module path (used by replay_runner.py for
-    # SDK-based history replay) without touching the temporal_build
-    # manifest.
+    # and the workflow_module / custom_replay_runner paths without
+    # touching the temporal_build manifest.
     workflow_module_path = (
         worker_info.workflow_module.short_path
         if worker_info.workflow_module else ""
     )
+    # custom_replay_runner takes precedence over the built-in Python
+    # path. If set, the launcher subprocess-execs it as
+    # `<custom_replay_runner> <history_file>`. If unset, the launcher
+    # falls back to `python3 private/replay_runner.py <module> <history>
+    # <classes>`.
+    custom_replay_runner_path = (
+        worker_info.replay_runner.short_path
+        if worker_info.replay_runner else ""
+    )
     manifest_content = """\
 {{
-  "workspace":         {workspace},
-  "temporal_bin":      {temporal_bin},
-  "worker_binary":     {worker_binary},
-  "task_queue":        {task_queue},
-  "workflow_types":    {workflow_types},
-  "activity_types":    {activity_types},
-  "workflow_module":   {workflow_module},
-  "replay_runner":     {replay_runner},
-  "search_attributes": {search_attributes},
-  "history_files":     {history_files}
+  "workspace":             {workspace},
+  "temporal_bin":          {temporal_bin},
+  "worker_binary":         {worker_binary},
+  "task_queue":            {task_queue},
+  "workflow_types":        {workflow_types},
+  "activity_types":        {activity_types},
+  "workflow_module":       {workflow_module},
+  "replay_runner":         {replay_runner},
+  "custom_replay_runner":  {custom_replay_runner},
+  "search_attributes":     {search_attributes},
+  "history_files":         {history_files}
 }}
 """.format(
-        workspace        = _json_str(workspace),
-        temporal_bin     = _json_str(worker_info.binary_info.temporal.short_path),
-        worker_binary    = _json_str(worker_info.worker_binary.short_path),
-        task_queue       = _json_str(worker_info.task_queue),
-        workflow_types   = _json_str_list(worker_info.workflow_types),
-        activity_types   = _json_str_list(worker_info.activity_types),
-        workflow_module  = _json_str(workflow_module_path),
-        replay_runner    = _json_str(ctx.file.replay_runner.short_path),
-        search_attributes = _json_str_dict(search_attrs),
-        history_files    = _json_str_list(history_files),
+        workspace            = _json_str(workspace),
+        temporal_bin         = _json_str(worker_info.binary_info.temporal.short_path),
+        worker_binary        = _json_str(worker_info.worker_binary.short_path),
+        task_queue           = _json_str(worker_info.task_queue),
+        workflow_types       = _json_str_list(worker_info.workflow_types),
+        activity_types       = _json_str_list(worker_info.activity_types),
+        workflow_module      = _json_str(workflow_module_path),
+        replay_runner        = _json_str(ctx.file.replay_runner.short_path),
+        custom_replay_runner = _json_str(custom_replay_runner_path),
+        search_attributes    = _json_str_dict(search_attrs),
+        history_files        = _json_str_list(history_files),
     )
 
     manifest = ctx.actions.declare_file(ctx.label.name + "_test_manifest.json")
@@ -86,11 +96,14 @@ def _temporal_launcher_impl(ctx):
     files = [ctx.file.launcher, ctx.file.replay_runner, manifest]
     if worker_info.workflow_module:
         files.append(worker_info.workflow_module)
+    if worker_info.replay_runner:
+        files.append(worker_info.replay_runner)
     runfiles = ctx.runfiles(
         files            = files,
         transitive_files = worker_info.binary_info.all_files,
     ).merge_all([
         ctx.runfiles(transitive_files = worker_info.worker_runfiles),
+        ctx.runfiles(transitive_files = worker_info.replay_runner_runfiles),
         ctx.attr.test_binary.default_runfiles,
         history_runfiles,
     ])
