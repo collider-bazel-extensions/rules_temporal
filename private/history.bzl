@@ -23,7 +23,12 @@ Produced by temporal_workflow_history; consumed by temporal_test.
 
 def _temporal_workflow_history_impl(ctx):
     worker_info   = ctx.attr.worker[TemporalWorkerInfo]
-    history_files = depset(ctx.files.srcs, order = "preorder")
+    # NOTE: must use the default depset order (postorder). Bazel >= 7
+    # rejects "preorder" depsets at `ctx.runfiles(transitive_files=...)`
+    # consumption time with `order 'preorder' is invalid for
+    # transitive_files`. The depset is iterated as a flat list of
+    # .json files by the launcher — order is invisible to consumers.
+    history_files = depset(ctx.files.srcs)
 
     return [
         DefaultInfo(files = history_files),

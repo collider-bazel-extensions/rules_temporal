@@ -62,7 +62,7 @@ primitives:
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.3.0")
+bazel_dep(name = "rules_temporal", version = "0.3.1")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
