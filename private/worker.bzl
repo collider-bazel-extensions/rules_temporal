@@ -19,6 +19,7 @@ and consumed by the temporal_test launcher.
         "task_queue":      "string: task queue this worker polls.",
         "workflow_types":  "list of strings: registered workflow type names.",
         "activity_types":  "list of strings: registered activity type names.",
+        "workflow_module": "File or None: the .py file containing the workflow classes (used by replay_runner.py for SDK-based history replay).",
         "manifest":        "File: JSON registration manifest (build artifact).",
     },
 )
@@ -97,6 +98,13 @@ def _temporal_build_impl(ctx):
         transitive = [binary_info.all_files, worker_runfiles],
     )
 
+    workflow_module = ctx.file.workflow_module if ctx.attr.workflow_module else None
+    if workflow_module:
+        all_files = depset(
+            [manifest, worker_bin, workflow_module],
+            transitive = [binary_info.all_files, worker_runfiles],
+        )
+
     return [
         DefaultInfo(files = all_files),
         TemporalWorkerInfo(
@@ -106,6 +114,7 @@ def _temporal_build_impl(ctx):
             task_queue      = task_queue,
             workflow_types  = workflow_types,
             activity_types  = activity_types,
+            workflow_module = workflow_module,
             manifest        = manifest,
         ),
     ]
@@ -154,6 +163,17 @@ Example:
             executable = True,
             cfg = "target",
             doc = "The worker executable (go_binary, py_binary, sh_binary, etc.).",
+        ),
+        "workflow_module": attr.label(
+            allow_single_file = [".py"],
+            doc = "Optional. The .py file containing the workflow class " +
+                  "definitions (the same names listed in `workflow_types`). " +
+                  "When set, `temporal_test(history = ...)` can replay " +
+                  "history files via the SDK Replayer — the launcher " +
+                  "subprocess-execs `private/replay_runner.py` with this " +
+                  "module's path. When unset, `temporal_test(history = ...)` " +
+                  "fails fast at runtime; pure `temporal_test` (no " +
+                  "`history`) still works without this attribute.",
         ),
         "workflow_types": attr.string_list(
             mandatory = True,

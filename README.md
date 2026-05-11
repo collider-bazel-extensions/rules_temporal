@@ -62,7 +62,7 @@ primitives:
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.3.1")
+bazel_dep(name = "rules_temporal", version = "0.3.2")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
@@ -310,11 +310,13 @@ time. Produces a `TemporalWorkerInfo` provider consumed by `temporal_test` and
 
 ```python
 temporal_build(
-    name           = "my_worker",
-    worker_binary  = ":my_worker_bin",   # required: a *_binary target
-    task_queue     = "my-task-queue",    # required: non-empty string
-    workflow_types = ["MyWorkflow"],     # required: at least one
-    activity_types = ["my_activity"],   # optional
+    name            = "my_worker",
+    worker_binary   = ":my_worker_bin",        # required: a *_binary target
+    task_queue      = "my-task-queue",         # required: non-empty string
+    workflow_types  = ["MyWorkflow"],          # required: at least one
+    activity_types  = ["my_activity"],         # optional
+    workflow_module = "workers/my_workflow.py", # optional: .py with the workflow classes
+                                                # (needed for SDK-based history replay; v0.3.2+)
 )
 ```
 
@@ -322,6 +324,8 @@ Validated at analysis time:
 - `task_queue` must be non-empty.
 - `workflow_types` must be non-empty and contain no duplicates or empty strings.
 - `activity_types` must contain no duplicates or empty strings.
+
+`workflow_module` is required only when downstream `temporal_test` targets attach a `history = ...` for SDK-based replay. The launcher subprocess-execs `private/replay_runner.py`, which dynamic-loads the `.py` and instantiates the listed `workflow_types` for `temporalio.worker.Replayer`. Requires system `python3` + system-pip-installed `temporalio` — same hermeticity contract as the rest of the worker-side path. (v0.3.1's launcher used the now-removed `temporal workflow replay --workflow-file` CLI subcommand, which fails at runtime on `temporal` v1.6+.)
 
 ### `temporal_test`
 

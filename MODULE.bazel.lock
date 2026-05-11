@@ -218,7 +218,7 @@
     "//:extensions.bzl%temporal": {
       "general": {
         "bzlTransitiveDigest": "j3FgElT7bMj1Jp/0HaA/xWzj4n0QAbep35JnNYdEaBM=",
-        "usagesDigest": "MzIcvUbLIEzP9GxaJEf5XAQGSDwCliRu3/8xROWmQpg=",
+        "usagesDigest": "irRC/UOMjukAVNjS4x6muGY1hpnxojbqUIEjSX0vKfs=",
         "recordedInputs": [
           "REPO_MAPPING:,bazel_tools bazel_tools"
         ],
@@ -250,7 +250,7 @@
     "@@rules_certmanager+//:extensions.bzl%cert_manager": {
       "general": {
         "bzlTransitiveDigest": "uMa/q9o2OyLx9XXwQBV4FEiGwGlpU+ktCpsemdzVrYs=",
-        "usagesDigest": "GFgTPrHdcHvW97WYaB4ZTvTrNjvIlnQ/dX7snV7kcAY=",
+        "usagesDigest": "C5aKvOJOs89svE6/baRk5l66I2SHSX2jLl2fdz1emq0=",
         "recordedInputs": [],
         "generatedRepoSpecs": {
           "cert_manager": {

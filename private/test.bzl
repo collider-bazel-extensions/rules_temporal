@@ -45,8 +45,14 @@ def _temporal_launcher_impl(ctx):
         history_runfiles = ctx.runfiles(transitive_files = hist_info.history_files)
 
     # Generate a combined manifest for this specific test target.
-    # This lets the launcher pick up search_attributes and history_files
-    # without touching the temporal_build manifest.
+    # This lets the launcher pick up search_attributes, history_files,
+    # and the workflow_module path (used by replay_runner.py for
+    # SDK-based history replay) without touching the temporal_build
+    # manifest.
+    workflow_module_path = (
+        worker_info.workflow_module.short_path
+        if worker_info.workflow_module else ""
+    )
     manifest_content = """\
 {{
   "workspace":         {workspace},
@@ -55,6 +61,8 @@ def _temporal_launcher_impl(ctx):
   "task_queue":        {task_queue},
   "workflow_types":    {workflow_types},
   "activity_types":    {activity_types},
+  "workflow_module":   {workflow_module},
+  "replay_runner":     {replay_runner},
   "search_attributes": {search_attributes},
   "history_files":     {history_files}
 }}
@@ -65,6 +73,8 @@ def _temporal_launcher_impl(ctx):
         task_queue       = _json_str(worker_info.task_queue),
         workflow_types   = _json_str_list(worker_info.workflow_types),
         activity_types   = _json_str_list(worker_info.activity_types),
+        workflow_module  = _json_str(workflow_module_path),
+        replay_runner    = _json_str(ctx.file.replay_runner.short_path),
         search_attributes = _json_str_dict(search_attrs),
         history_files    = _json_str_list(history_files),
     )
@@ -73,8 +83,11 @@ def _temporal_launcher_impl(ctx):
     ctx.actions.write(output = manifest, content = manifest_content)
 
     # Collect all files the launcher needs at runtime.
+    files = [ctx.file.launcher, ctx.file.replay_runner, manifest]
+    if worker_info.workflow_module:
+        files.append(worker_info.workflow_module)
     runfiles = ctx.runfiles(
-        files            = [ctx.file.launcher, manifest],
+        files            = files,
         transitive_files = worker_info.binary_info.all_files,
     ).merge_all([
         ctx.runfiles(transitive_files = worker_info.worker_runfiles),
@@ -131,6 +144,13 @@ _temporal_launcher_test = rule(
             allow_single_file = True,
             executable = False,
             doc = "The Python launcher script.",
+        ),
+        "replay_runner": attr.label(
+            default = Label("//private:replay_runner.py"),
+            allow_single_file = True,
+            executable = False,
+            doc = "The SDK-based replay shim. Invoked by the launcher when " +
+                  "the consumer attaches a temporal_workflow_history.",
         ),
         "namespace_config": attr.label(
             default   = None,

@@ -1,1 +1,4 @@
-exports_files(["launcher.py"])
+exports_files([
+    "launcher.py",
+    "replay_runner.py",
+])

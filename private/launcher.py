@@ -262,22 +262,39 @@ def _search_attribute_flags(search_attributes: dict) -> list[str]:
     return flags
 
 
-def _replay_histories(temporal_bin: str, address: str, namespace: str,
-                       history_files: list[str], tmp_dir: str = "") -> None:
-    """Replay committed workflow history files against the running worker."""
+def _replay_histories(replay_runner: str,
+                       workflow_module: str,
+                       workflow_types: list[str],
+                       history_files: list[str],
+                       tmp_dir: str = "") -> None:
+    """Replay committed workflow history files via the SDK Replayer.
+
+    Invokes `private/replay_runner.py` once per history file as a
+    subprocess. The CLI `temporal workflow replay --workflow-file`
+    subcommand was removed upstream — replay is now SDK-only — so the
+    runner dynamic-loads the worker's `workflow_module` (a .py file)
+    and calls `temporalio.worker.Replayer.replay_workflow` against
+    each history JSON.
+    """
     if not history_files:
         return
+    if not workflow_module:
+        raise RuntimeError(
+            "history replay requires the `workflow_module` attribute on "
+            "temporal_build. Set it to the .py file containing your "
+            "workflow class definitions (the same names listed in "
+            "`workflow_types`)."
+        )
     env = os.environ.copy()
     if tmp_dir:
         env["HOME"]   = tmp_dir
         env["TMPDIR"] = tmp_dir
+    class_names_csv = ",".join(workflow_types)
     for history_file in history_files:
         _log(f"Replaying workflow history: {history_file}")
         result = subprocess.run(
-            [temporal_bin, "workflow", "replay",
-             "--address",       address,
-             "--namespace",     namespace,
-             "--workflow-file", history_file],
+            ["python3", replay_runner,
+             workflow_module, history_file, class_names_csv],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
@@ -379,6 +396,10 @@ def main_test(m: dict, workspace: str) -> None:
     activity_types = m.get("activity_types", [])
     search_attrs   = m.get("search_attributes", {})
     history_files  = [_find_runfile(p, workspace) for p in m.get("history_files", [])]
+    workflow_module_rel = m.get("workflow_module", "")
+    workflow_module = _find_runfile(workflow_module_rel, workspace) if workflow_module_rel else ""
+    replay_runner_rel = m.get("replay_runner", "")
+    replay_runner = _find_runfile(replay_runner_rel, workspace) if replay_runner_rel else ""
 
     _ensure_executable(temporal_bin)
     _ensure_executable(worker_bin)
@@ -462,8 +483,9 @@ def main_test(m: dict, workspace: str) -> None:
     if history_files:
         _log(f"Replaying {len(history_files)} workflow history file(s) …")
         try:
-            _replay_histories(temporal_bin, address, namespace,
-                              history_files, tmp_dir=test_tmpdir)
+            _replay_histories(replay_runner, workflow_module,
+                              workflow_types, history_files,
+                              tmp_dir=test_tmpdir)
         except RuntimeError as exc:
             _log(str(exc))
             sys.exit(1)
@@ -480,6 +502,15 @@ def main_test(m: dict, workspace: str) -> None:
     env["TEMPORAL_ADDRESS"]    = address
     env["TEMPORAL_NAMESPACE"]  = namespace
     env["TEMPORAL_TASK_QUEUE"] = task_queue
+    # Expose the resolved replay-runner + workflow-module paths so test
+    # scripts that capture a history at runtime can invoke replay
+    # themselves (no need to re-resolve the launcher's runfiles).
+    if replay_runner:
+        env["TEMPORAL_REPLAY_RUNNER"] = replay_runner
+    if workflow_module:
+        env["TEMPORAL_WORKFLOW_MODULE"] = workflow_module
+    if workflow_types:
+        env["TEMPORAL_WORKFLOW_TYPES"] = ",".join(workflow_types)
     # Ensure HOME and TMPDIR are set so the Temporal CLI (used by the test
     # script) can find its config dirs inside the Bazel sandbox.
     if test_tmpdir:

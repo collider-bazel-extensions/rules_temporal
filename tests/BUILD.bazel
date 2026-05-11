@@ -36,6 +36,7 @@ filegroup(
 temporal_build(
     name           = "hello_worker",
     worker_binary  = ":hello_worker_bin",
+    workflow_module = "workers/hello_worker.py",
     task_queue     = "test-hello-queue",
     workflow_types = [
         "HelloWorkflow",

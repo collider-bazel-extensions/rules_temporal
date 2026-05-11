@@ -80,11 +80,33 @@ fi
 echo "OK: history exported to $HISTORY_FILE"
 
 # -------------------------------------------------------------------------
-# 3. Replay the history against the running worker.
+# 3. Replay the history via the SDK Replayer (v0.3.2+).
+#
+# The `temporal workflow replay --workflow-file` CLI subcommand was
+# removed upstream — replay is now SDK-only. The launcher exports
+# TEMPORAL_REPLAY_RUNNER + TEMPORAL_WORKFLOW_MODULE +
+# TEMPORAL_WORKFLOW_TYPES so test scripts can drive replay against
+# captured histories.
 # -------------------------------------------------------------------------
 
+if [[ -n "${TEMPORAL_REPLAY_RUNNER:-}" && -n "${TEMPORAL_WORKFLOW_MODULE:-}" ]]; then
+    echo "Replaying history via replay_runner.py …"
+    if python3 "$TEMPORAL_REPLAY_RUNNER" \
+            "$TEMPORAL_WORKFLOW_MODULE" \
+            "$HISTORY_FILE" \
+            "HelloWorkflow" 2>&1; then
+        echo "OK: replay completed without non-determinism"
+    else
+        echo "FAIL: replay reported a non-determinism error" >&2
+        exit 1
+    fi
+else
+    echo "SKIP: TEMPORAL_REPLAY_RUNNER / TEMPORAL_WORKFLOW_MODULE not set"
+    echo "      (temporal_build needs `workflow_module` to be set)"
+fi
+
 # -------------------------------------------------------------------------
-# 3. Inspect the exported history for expected event types.
+# 4. Inspect the exported history for expected event types.
 # -------------------------------------------------------------------------
 
 echo "Inspecting history …"
