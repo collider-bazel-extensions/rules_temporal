@@ -13,6 +13,14 @@ config_setting(
 )
 
 config_setting(
+    name = "_temporal_linux_arm64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
+config_setting(
     name = "_temporal_darwin_arm64",
     constraint_values = [
         "@platforms//os:macos",
@@ -33,10 +41,23 @@ config_setting(
 # ---------------------------------------------------------------------------
 
 temporal_binary(
+    name    = "temporal_1_7_0",
+    version = "1.7.0",
+    binary  = select({
+        ":_temporal_linux_amd64":  "@temporal_1_7_0_linux_amd64//:temporal_bins",
+        ":_temporal_linux_arm64":  "@temporal_1_7_0_linux_arm64//:temporal_bins",
+        ":_temporal_darwin_arm64": "@temporal_1_7_0_darwin_arm64//:temporal_bins",
+        ":_temporal_darwin_amd64": "@temporal_1_7_0_darwin_amd64//:temporal_bins",
+    }),
+    visibility = ["//visibility:public"],
+)
+
+temporal_binary(
     name    = "temporal_1_6_2",
     version = "1.6.2",
     binary  = select({
         ":_temporal_linux_amd64":  "@temporal_1_6_2_linux_amd64//:temporal_bins",
+        ":_temporal_linux_arm64":  "@temporal_1_6_2_linux_arm64//:temporal_bins",
         ":_temporal_darwin_arm64": "@temporal_1_6_2_darwin_arm64//:temporal_bins",
         ":_temporal_darwin_amd64": "@temporal_1_6_2_darwin_amd64//:temporal_bins",
     }),
@@ -45,11 +66,11 @@ temporal_binary(
 
 # ---------------------------------------------------------------------------
 # Default alias — used by temporal_build and temporal_test when no explicit
-# temporal = ... attribute is given.
+# temporal = ... attribute is given. v0.5+: default bumps to 1.7.0.
 # ---------------------------------------------------------------------------
 
 alias(
     name       = "temporal_default",
-    actual     = ":temporal_1_6_2",
+    actual     = ":temporal_1_7_0",
     visibility = ["//visibility:public"],
 )

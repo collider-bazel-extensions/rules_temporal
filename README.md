@@ -62,25 +62,27 @@ primitives:
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.4.0")
+bazel_dep(name = "rules_temporal", version = "0.5.0")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
-# Use the host-installed temporal CLI (auto-detects from PATH):
-temporal.system(versions = ["1.6.2"])
-
-# Or specify the path explicitly:
-# temporal.system(versions = ["1.6.2"], bin_dir = "/usr/local/bin")
-
-# Or download pre-built tarballs from GitHub releases:
-# temporal.version(versions = ["1.6.2"])
-
+# v0.5+: download pre-built tarballs from GitHub releases (default
+# mode for the rules_temporal testbed; no host install required).
+temporal.version(versions = ["1.7.0"])
 use_repo(temporal,
-    "temporal_1_6_2_linux_amd64",
-    "temporal_1_6_2_darwin_arm64",
-    "temporal_1_6_2_darwin_amd64",
+    "temporal_1_7_0_linux_amd64",
+    "temporal_1_7_0_linux_arm64",
+    "temporal_1_7_0_darwin_amd64",
+    "temporal_1_7_0_darwin_arm64",
 )
+
+# Or reuse the host-installed temporal CLI:
+# temporal.system(versions = ["1.7.0"])
+# (Specify bin_dir explicitly when the binary lives outside the
+# auto-detected paths: `temporal.system(versions = ["1.7.0"], bin_dir = "/usr/local/bin")`)
 ```
+
+Both modes coexist per minor version. rules_temporal's own `MODULE.bazel` uses `temporal.version()` so CI runs on bare `ubuntu-latest`.
 
 ### WORKSPACE (legacy)
 
@@ -830,8 +832,6 @@ All test scripts should:
 - **No time-skipping**: `temporal server start-dev` runs on real wall-clock time.
   Timer-based workflows (`workflow.sleep`, cron schedules) are not testable
   without long test timeouts.
-- **darwin tarball checksums are placeholders**: `temporal.version()` on macOS
-  requires real SHA-256 values pinned in `extensions.bzl`.
 - **`~1–2 s` overhead per test** for server startup. For very large test suites,
   consider a shared-server approach with `temporal_server`.
 
