@@ -198,7 +198,7 @@ load("@rules_itest//:itest.bzl", "itest_service")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_temporal//:defs.bzl", "temporal_install", "temporal_install_health_check")
 
-kind_cluster(name = "cluster", k8s_version = "1.32")
+kind_cluster(name = "cluster", k8s_version = "1.35")
 kind_health_check(name = "cluster_health", cluster = ":cluster")
 itest_service(name = "kind_svc", exe = ":cluster", health_check = ":cluster_health")
 
