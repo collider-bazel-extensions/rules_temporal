@@ -45,11 +45,11 @@ use_repo(temporal,
 # ---- dev-only: install-smoke composition -----------------------------------
 bazel_dep(name = "rules_itest", version = "0.0.52", dev_dependency = True)
 
-bazel_dep(name = "rules_kind", version = "0.1.2", dev_dependency = True)
+bazel_dep(name = "rules_kind", version = "0.2.0", dev_dependency = True)
 git_override(
     module_name = "rules_kind",
     remote = "https://github.com/collider-bazel-extensions/rules_kind",
-    commit = "b9c4670646f8e3772816f56a048e311d5310a763",  # v0.1.2
+    commit = "91ff914ccf55fdd627e7cda3d83d7e4ae8206c14",  # v0.2.0 — k8s 1.35/1.36/1.37, digest-pinned kindest/node images
 )
 
 # cert-manager is required upstream of temporal-operator — operator's
