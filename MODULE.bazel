@@ -45,11 +45,11 @@ use_repo(temporal,
 # ---- dev-only: install-smoke composition -----------------------------------
 bazel_dep(name = "rules_itest", version = "0.0.52", dev_dependency = True)
 
-bazel_dep(name = "rules_kind", version = "0.2.1", dev_dependency = True)
+bazel_dep(name = "rules_kind", version = "0.3.0", dev_dependency = True)
 git_override(
     module_name = "rules_kind",
     remote = "https://github.com/collider-bazel-extensions/rules_kind",
-    commit = "b3f1b1d4215b3793ee2d5673f552141c44af126d",  # v0.2.1 — reaper survives the end of the test; podman uses the real image store
+    commit = "12a73e02fe4b9400d3dc733a3d80ce06c47b6411",  # v0.3.0 — confirmed deletion + sweep, RULES_KIND_MAX_CLUSTERS
 )
 
 # cert-manager is required upstream of temporal-operator — operator's
