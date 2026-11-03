@@ -15,6 +15,7 @@ Never imported; always exec'd by the wrapper shell script.
 
 import atexit
 import json
+import math
 import os
 import signal
 import socket
@@ -94,6 +95,26 @@ def _is_port_conflict(log_path: str) -> bool:
     return "address already in use" in content.lower() or "bind: address" in content.lower()
 
 
+def _ready_timeout(m: dict, key: str, default: float = 30.0) -> float:
+    """Seconds to wait for a component, from manifest key `key` (#10).
+
+    temporal_test / temporal_server write worker_ready_timeout /
+    server_ready_timeout into the manifest (default "30"). A manifest without
+    the key (written by an older rule) keeps `default`. Anything that is not a
+    positive, finite number of seconds is an error naming the key.
+    """
+    raw = m.get(key)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        raise ValueError(f"{key}={raw!r}: expected a number of seconds") from None
+    if not (value > 0 and math.isfinite(value)):
+        raise ValueError(f"{key}={raw!r}: must be a positive number of seconds")
+    return value
+
+
 def _wait_server_ready(temporal_bin: str, host: str, port: int,
                        timeout: float = 30.0,
                        tmp_dir: str = "") -> None:
@@ -144,11 +165,14 @@ def _wait_server_ready(temporal_bin: str, host: str, port: int,
 def _wait_worker_ready(temporal_bin: str, address: str,
                        namespace: str, task_queue: str,
                        timeout: float = 30.0,
-                       tmp_dir: str = "") -> list[dict]:
+                       tmp_dir: str = "",
+                       proc = None) -> list[dict]:
     """
     Poll until the worker has registered pollers on the task queue.
 
-    Returns the list of poller dicts from 'temporal task-queue describe'.
+    Returns the list of poller dicts from 'temporal task-queue describe', or
+    [] at once if `proc` (the worker process) exits first, so a crashing
+    worker doesn't use up a long timeout.
     Raises TimeoutError if no pollers appear within the timeout.
     """
     env = os.environ.copy()
@@ -158,6 +182,8 @@ def _wait_worker_ready(temporal_bin: str, address: str,
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return []
         result = subprocess.run(
             [temporal_bin, "task-queue", "describe",
              "--address", address,
@@ -339,7 +365,8 @@ def _replay_histories(replay_runner: str,
 
 def _start_server(temporal_bin: str, namespace: str,
                    test_tmpdir: str,
-                   search_attributes = None) -> tuple:
+                   search_attributes = None,
+                   ready_timeout: float = 30.0) -> tuple:
     """Allocate a free port, start temporal server start-dev, wait until ready.
 
     The --namespace flag passed to start-dev auto-creates the namespace, so no
@@ -385,7 +412,8 @@ def _start_server(temporal_bin: str, namespace: str,
             with open(server_log, "w") as log_f:
                 proc = subprocess.Popen(cmd, stdout=log_f, stderr=log_f)
             _proc_holder[0] = proc
-            _wait_server_ready(temporal_bin, host, port, tmp_dir=test_tmpdir)
+            _wait_server_ready(temporal_bin, host, port,
+                               timeout=ready_timeout, tmp_dir=test_tmpdir)
             _log("Temporal server ready.")
             return proc, address
         except (subprocess.SubprocessError, TimeoutError) as exc:
@@ -431,6 +459,8 @@ def main_test(m: dict, workspace: str) -> None:
     replay_runner = _find_runfile(replay_runner_rel, workspace) if replay_runner_rel else ""
     custom_replay_runner_rel = m.get("custom_replay_runner", "")
     custom_replay_runner = _find_runfile(custom_replay_runner_rel, workspace) if custom_replay_runner_rel else ""
+    worker_ready_timeout = _ready_timeout(m, "worker_ready_timeout")
+    server_ready_timeout = _ready_timeout(m, "server_ready_timeout")
 
     _ensure_executable(temporal_bin)
     _ensure_executable(worker_bin)
@@ -440,6 +470,8 @@ def main_test(m: dict, workspace: str) -> None:
     worker_log  = os.path.join(test_tmpdir, "temporal_worker.log")
 
     _log(f"Namespace: {namespace}")
+    _log(f"Ready timeouts: server {server_ready_timeout}s, "
+         f"worker {worker_ready_timeout}s (task queue '{task_queue}')")
     if search_attrs:
         _log(f"Custom search attributes: {list(search_attrs.keys())}")
 
@@ -450,6 +482,7 @@ def main_test(m: dict, workspace: str) -> None:
     _server_proc, address = _start_server(
         temporal_bin, namespace, test_tmpdir,
         search_attributes=search_attrs,
+        ready_timeout=server_ready_timeout,
     )
 
     # -- Start worker --------------------------------------------------------
@@ -486,8 +519,10 @@ def main_test(m: dict, workspace: str) -> None:
     try:
         _log(f"Waiting for worker to poll task queue '{task_queue}' …")
         _wait_worker_ready(temporal_bin, address, namespace, task_queue,
-                           tmp_dir=test_tmpdir)
-        _log("Worker ready.")
+                           timeout=worker_ready_timeout,
+                           tmp_dir=test_tmpdir, proc=worker_proc)
+        if worker_proc.poll() is None:
+            _log("Worker ready.")
     except TimeoutError as exc:
         if os.path.exists(worker_log):
             with open(worker_log) as wlf:
@@ -565,6 +600,7 @@ def main_test(m: dict, workspace: str) -> None:
 def main_server(m: dict, workspace: str) -> None:
     temporal_bin = _find_runfile(m["temporal_bin"], workspace)
     _ensure_executable(temporal_bin)
+    server_ready_timeout = _ready_timeout(m, "server_ready_timeout")
 
     test_tmpdir = os.environ.get("TEST_TMPDIR") or tempfile.mkdtemp(prefix="rules_temporal_")
     namespace   = f"temporal-test-{uuid.uuid4().hex[:12]}"
@@ -573,7 +609,9 @@ def main_server(m: dict, workspace: str) -> None:
 
     # Start Temporal dev server.
     # --namespace auto-creates the namespace; no separate create call needed.
-    _server_proc, address = _start_server(temporal_bin, namespace, test_tmpdir)
+    _log(f"Ready timeout: server {server_ready_timeout}s")
+    _server_proc, address = _start_server(temporal_bin, namespace, test_tmpdir,
+                                          ready_timeout=server_ready_timeout)
 
     # Write env file atomically once server is ready.
     env_file = os.environ.get("RULES_TEMPORAL_OUTPUT_ENV_FILE")

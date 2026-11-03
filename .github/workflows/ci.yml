@@ -45,6 +45,17 @@ jobs:
             //:temporal_default \
             //tests/install_smoke:smoke_test
 
+      # Tests that need no host temporalio: launcher unit tests and a
+      # temporal_test whose worker never connects (#10).
+      - name: bazel test (no-temporalio tests)
+        run: |
+          bazel test \
+            //tests:launcher_unit_test \
+            //tests:temporal_server_test \
+            //tests:temporal_health_check_test \
+            //tests/ready_timeout:worker_ready_timeout_test \
+            --test_output=errors
+
       - name: Upload test logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

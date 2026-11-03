@@ -1,4 +1,5 @@
 load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_test.bzl", "py_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_temporal//:defs.bzl",
     "temporal_build",
@@ -133,4 +134,15 @@ sh_test(
     data = [":temporal_server_test_health"],
     size = "small",
     tags = ["temporal"],
+)
+
+# ---------------------------------------------------------------------------
+# Launcher unit test (#10): readiness timeouts. No server, no temporalio.
+# ---------------------------------------------------------------------------
+
+py_test(
+    name = "launcher_unit_test",
+    srcs = ["launcher_unit_test.py"],
+    data = ["//private:launcher.py"],
+    size = "small",
 )

@@ -142,13 +142,15 @@ generate UUID namespace (temporal-test-<12-hex>)
   ↓
 start temporal server start-dev  [retry on port conflict, up to 5 attempts]
   ↓
-_wait_server_ready: TCP open → gRPC cluster health (15 s timeout)
+_wait_server_ready: TCP open → gRPC cluster health (server_ready_timeout, default 30 s)
   ↓
 _create_namespace
   ↓
 start worker subprocess (TEMPORAL_* env vars set)
   ↓
 _wait_worker_ready: poll task-queue describe until pollers appear
+                    (worker_ready_timeout, default 30 s; returns at once if
+                    the worker process exits)
   ↓
 _validate_registered_types (silently skipped if CLI doesn't return type info)
   ↓
@@ -611,3 +613,18 @@ execution, which is outside the scope of rules_temporal's shell-test model.
   task queue. History files must have been exported from a cluster running the same
   workflow code (or an older compatible version). Histories from incompatible
   versions will fail replay by design.
+
+## Readiness timeouts (#10)
+
+`temporal_test` takes `worker_ready_timeout` and `server_ready_timeout`, and
+`temporal_server` takes `server_ready_timeout`, all in seconds (default 30).
+The macro passes them as strings. `ready_timeout_seconds` in `test.bzl` checks
+at analysis time that each is a positive decimal number, and the rule writes
+it into the manifest. The launcher's `_ready_timeout` reads it, falls back to
+30 s if the key is missing (a manifest from an older rule), and refuses zero,
+negative, non-numeric, NaN or infinite values. These are explicit attributes
+rather than values derived from the test's `size` / `timeout`: they are easier
+to reason about, and the default stays as it was.
+
+The worker wait also stops polling as soon as the worker process exits, so a
+crashing worker fails the test at once even under a long timeout.

@@ -22,6 +22,18 @@ def _json_str_dict(d):
     """Serialize a dict of string→string as a JSON object."""
     return "{" + ", ".join([_json_str(k) + ": " + _json_str(v) for k, v in d.items()]) + "}"
 
+def ready_timeout_seconds(label, attr_name, value):
+    """Validate a readiness timeout attribute: a positive number of seconds.
+
+    Returned as written (e.g. "180", "2.5"); the launcher parses it.
+    """
+    raw = value.strip()
+    digits = raw.replace(".", "", 1)
+    if not raw or not digits.isdigit() or not digits.replace("0", ""):
+        fail("{}: {} = {}: expected a positive number of seconds.".format(
+            label, attr_name, repr(value)))
+    return raw
+
 # ---------------------------------------------------------------------------
 # Internal rule: launcher + runfiles assembly
 # ---------------------------------------------------------------------------
@@ -73,7 +85,9 @@ def _temporal_launcher_impl(ctx):
   "replay_runner":         {replay_runner},
   "custom_replay_runner":  {custom_replay_runner},
   "search_attributes":     {search_attributes},
-  "history_files":         {history_files}
+  "history_files":         {history_files},
+  "worker_ready_timeout":  {worker_ready_timeout},
+  "server_ready_timeout":  {server_ready_timeout}
 }}
 """.format(
         workspace            = _json_str(workspace),
@@ -87,6 +101,10 @@ def _temporal_launcher_impl(ctx):
         custom_replay_runner = _json_str(custom_replay_runner_path),
         search_attributes    = _json_str_dict(search_attrs),
         history_files        = _json_str_list(history_files),
+        worker_ready_timeout = _json_str(ready_timeout_seconds(
+            ctx.label, "worker_ready_timeout", ctx.attr.worker_ready_timeout)),
+        server_ready_timeout = _json_str(ready_timeout_seconds(
+            ctx.label, "server_ready_timeout", ctx.attr.server_ready_timeout)),
     )
 
     manifest = ctx.actions.declare_file(ctx.label.name + "_test_manifest.json")
@@ -170,6 +188,16 @@ _temporal_launcher_test = rule(
             providers = [TemporalNamespaceConfigInfo],
             doc = "Optional temporal_namespace_config target for custom search attributes.",
         ),
+        "server_ready_timeout": attr.string(
+            default = "30",
+            doc = "Seconds the launcher waits for the Temporal dev server " +
+                  "to accept gRPC connections. A positive number.",
+        ),
+        "worker_ready_timeout": attr.string(
+            default = "30",
+            doc = "Seconds the launcher waits for the worker to poll its " +
+                  "task queue before failing the test. A positive number.",
+        ),
         "test_binary": attr.label(
             mandatory = True,
             executable = True,
@@ -199,6 +227,8 @@ def temporal_test(
         test_rule = None,
         namespace_config = None,
         history = None,
+        worker_ready_timeout = 30,
+        server_ready_timeout = 30,
         **kwargs):
     """Macro: runs a test against an ephemeral Temporal cluster.
 
@@ -226,6 +256,12 @@ def temporal_test(
                           Defaults to native.sh_test.
         namespace_config: Optional label of a temporal_namespace_config target.
         history:          Optional label of a temporal_workflow_history target.
+        worker_ready_timeout: Seconds (int, float or string) to wait for the
+                          worker to poll its task queue. Default 30. On
+                          timeout the test fails naming the task queue.
+                          Keep it below the test's own `timeout`.
+        server_ready_timeout: Seconds (int, float or string) to wait for the
+                          Temporal dev server to become ready. Default 30.
         **kwargs:         Remaining kwargs forwarded to test_rule.
     """
     srcs  = srcs  or []
@@ -257,4 +293,6 @@ def temporal_test(
         tags             = tags,
         namespace_config = namespace_config,
         history          = history,
+        worker_ready_timeout = str(worker_ready_timeout),
+        server_ready_timeout = str(server_ready_timeout),
     )

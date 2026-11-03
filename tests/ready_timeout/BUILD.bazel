@@ -1,0 +1,35 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_temporal//:defs.bzl", "temporal_build", "temporal_test")
+
+# #10: worker_ready_timeout is what the launcher waits. No temporalio
+# needed: the worker never connects.
+
+sh_binary(
+    name = "never_ready_worker",
+    srcs = ["never_ready_worker.sh"],
+)
+
+temporal_build(
+    name           = "never_ready",
+    worker_binary  = ":never_ready_worker",
+    task_queue     = "never-ready-462",
+    workflow_types = ["NeverWorkflow"],
+)
+
+# Expected to fail; run by worker_ready_timeout_test.
+temporal_test(
+    name                 = "never_ready_test",
+    worker               = ":never_ready",
+    srcs                 = ["body.sh"],
+    worker_ready_timeout = 3,
+    tags                 = ["manual"],
+)
+
+sh_test(
+    name = "worker_ready_timeout_test",
+    srcs = ["worker_ready_timeout_test.sh"],
+    args = ["$(rootpath :never_ready_test)"],
+    data = [":never_ready_test"],
+    size = "medium",
+)

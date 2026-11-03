@@ -27,15 +27,9 @@ require_env TEMPORAL_TASK_QUEUE
 TEMPORAL_BIN="$(command -v temporal 2>/dev/null || true)"
 if [[ -z "$TEMPORAL_BIN" ]]; then
     RUNFILES_ROOT="${TEST_SRCDIR:-${RUNFILES_DIR:-}}"
-    for candidate in \
-        "$RUNFILES_ROOT/temporal_1_6_2_linux_amd64/bin/temporal" \
-        "$RUNFILES_ROOT/temporal_1_6_2_darwin_arm64/bin/temporal" \
-        "$RUNFILES_ROOT/temporal_1_6_2_darwin_amd64/bin/temporal"; do
-        if [[ -x "$candidate" ]]; then
-            TEMPORAL_BIN="$candidate"
-            break
-        fi
-    done
+    # Any version / platform repo (Bzlmod names it +temporal+temporal_<v>_<plat>).
+    TEMPORAL_BIN="$(find -L "$RUNFILES_ROOT" -path '*temporal_*' -name temporal \
+        -type f -perm -u+x 2>/dev/null | head -1)"
 fi
 if [[ -z "$TEMPORAL_BIN" ]]; then
     echo "ERROR: temporal binary not found in PATH or runfiles" >&2
