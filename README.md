@@ -62,7 +62,7 @@ primitives:
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.5.0")
+bazel_dep(name = "rules_temporal", version = "0.6.0")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
@@ -417,9 +417,21 @@ temporal_test(
     test_rule        = go_test,             # optional; default native.sh_test
     namespace_config = ":my_ns_config",     # optional: temporal_namespace_config
     history          = ":my_histories",     # optional: temporal_workflow_history
+    worker_ready_timeout = 30,              # optional: seconds, default 30
+    server_ready_timeout = 30,              # optional: seconds, default 30
     **kwargs,                               # forwarded to test_rule
 )
 ```
+
+`worker_ready_timeout` is how long the launcher waits for the worker to poll
+its task queue; `server_ready_timeout` how long it waits for
+`temporal server start-dev` to accept gRPC. Each takes an int, float or string
+number of seconds and fails the build if it is not positive. Raise
+`worker_ready_timeout` for a large worker on a loaded host, keeping it below
+the test's own `timeout`. On timeout the test fails with
+`Worker not ready within <N>s (namespace=..., task_queue=...)` and the worker
+log. A worker that exits before it is ready fails the test at once. The
+launcher logs both values at start.
 
 Environment variables injected into the test binary:
 
@@ -491,7 +503,10 @@ A long-running server target for multi-service integration tests with
 then blocks until SIGTERM.
 
 ```python
-temporal_server(name = "my_temporal")
+temporal_server(
+    name = "my_temporal",
+    server_ready_timeout = "120",   # optional: seconds (a string), default "30"
+)
 ```
 
 The env file contains:
@@ -819,10 +834,6 @@ All test scripts should:
 
 ## Known limitations
 
-- **`temporal workflow replay`** is not present in Temporal CLI 1.6.2.
-  `temporal_workflow_history` stores history files as Bazel artifacts and
-  inspects them at test time; full replay will be enabled in a future CLI
-  version.
 - **`temporal_server` search attributes**: the server mode wrapper does not
   currently forward `--search-attribute` flags. Use `temporal_test` with
   `namespace_config` when custom search attributes are required.
@@ -842,4 +853,17 @@ All test scripts should:
 bazel test //tests/...
 ```
 
-All 5 tests pass on Linux x86_64 with Temporal CLI 1.6.2.
+All 7 tests pass on Linux x86_64 with Temporal CLI 1.7.0.
+
+The worker-backed tests (`hello_test`, `namespace_config_test`,
+`temporal_replay_test`) need `temporalio` importable by Bazel's hermetic Python,
+which doesn't see host pip installs (#4). Until then, point it at them:
+
+```sh
+bazel test //tests/... \
+    --test_env=PYTHONPATH=/usr/lib/python3.14/site-packages:$HOME/.local/lib/python3.14/site-packages
+```
+
+CI runs only the tests that don't need `temporalio`: `launcher_unit_test`,
+`temporal_server_test`, `temporal_health_check_test`,
+`ready_timeout:worker_ready_timeout_test`.

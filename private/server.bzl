@@ -1,6 +1,7 @@
 "temporal_server rule and temporal_health_check rule."
 
 load("//private:binary.bzl", "TemporalBinaryInfo")
+load("//private:test.bzl", "ready_timeout_seconds")
 
 # ---------------------------------------------------------------------------
 # temporal_server
@@ -15,12 +16,15 @@ def _temporal_server_impl(ctx):
     # worker concerns and are irrelevant to a standalone Temporal server.
     manifest_content = """\
 {{
-  "workspace":    "{workspace}",
-  "temporal_bin": "{temporal_bin}"
+  "workspace":            "{workspace}",
+  "temporal_bin":         "{temporal_bin}",
+  "server_ready_timeout": "{server_ready_timeout}"
 }}
 """.format(
         workspace    = workspace,
         temporal_bin = binary_info.temporal.short_path,
+        server_ready_timeout = ready_timeout_seconds(
+            ctx.label, "server_ready_timeout", ctx.attr.server_ready_timeout),
     )
 
     manifest = ctx.actions.declare_file(ctx.label.name + "_server_manifest.json")
@@ -86,6 +90,12 @@ Example:
             default         = Label("//private:launcher.py"),
             allow_single_file = True,
             doc = "The Python launcher script.",
+        ),
+        "server_ready_timeout": attr.string(
+            default = "30",
+            doc = "Seconds to wait for the dev server to accept gRPC " +
+                  "connections before giving up. A positive number, as a " +
+                  "string (e.g. \"120\").",
         ),
         "temporal": attr.label(
             default   = Label("//:temporal_default"),

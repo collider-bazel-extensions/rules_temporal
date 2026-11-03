@@ -39,6 +39,8 @@ rules_temporal/
     ├── temporal_replay_test.sh    # Workflow history export/inspection test
     ├── temporal_server_test.sh    # temporal_server lifecycle test
     ├── temporal_health_check_test.sh  # temporal_health_check script behavior test
+    ├── launcher_unit_test.py      # #10: readiness timeouts (py_test, no server)
+    ├── ready_timeout/             # #10: temporal_test with a never-ready worker, worker_ready_timeout = 3
     └── workers/
         └── hello_worker.py       # Python worker: Hello/Echo/Math/Counter workflows
 ```
@@ -175,7 +177,7 @@ attribute of an `itest_service` in rules_itest.
 
 ## Supported Temporal CLI versions
 
-- 1.6.2 (bundled; also tested with host-installed)
+- 1.7.0 (`temporal.version()`; also tested with host-installed)
 
 The auto-detection logic works with any version of the Temporal CLI in PATH.
 
@@ -212,8 +214,13 @@ temporal_test(
     test_rule        = go_test,             # optional; default native.sh_test
     namespace_config = ":my_ns_config",     # optional
     history          = ":my_histories",     # optional
+    worker_ready_timeout = 30,              # optional: seconds the launcher waits for pollers
+    server_ready_timeout = 30,              # optional: seconds it waits for start-dev
     **kwargs,
 )
+# temporal_server(name = ..., server_ready_timeout = "30") likewise (a string).
+# Bad values fail analysis (ready_timeout_seconds in test.bzl); the launcher's
+# _ready_timeout keeps 30 s for a manifest without the key (#10).
 
 # Declare custom search attributes (registered at server startup).
 temporal_namespace_config(
@@ -248,23 +255,23 @@ temporal_health_check(name = "my_health", server = ":my_server")
 ### MODULE.bazel (Bzlmod)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.2.0")
+bazel_dep(name = "rules_temporal", version = "0.6.0")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
 # Use the host-installed temporal CLI (auto-detects from PATH):
-temporal.system(versions = ["1.6.2"])
+temporal.system(versions = ["1.7.0"])
 
 # Or specify the path explicitly:
-# temporal.system(versions = ["1.6.2"], bin_dir = "/usr/local/bin")
+# temporal.system(versions = ["1.7.0"], bin_dir = "/usr/local/bin")
 
 # Or download pre-built tarballs:
-# temporal.version(versions = ["1.6.2"])
+# temporal.version(versions = ["1.7.0"])
 
 use_repo(temporal,
-    "temporal_1_6_2_linux_amd64",
-    "temporal_1_6_2_darwin_arm64",
-    "temporal_1_6_2_darwin_amd64",
+    "temporal_1_7_0_linux_amd64",
+    "temporal_1_7_0_darwin_arm64",
+    "temporal_1_7_0_darwin_amd64",
 )
 ```
 
@@ -273,7 +280,7 @@ use_repo(temporal,
 ```python
 load("@rules_temporal//:repositories.bzl", "temporal_system_dependencies")
 
-temporal_system_dependencies(versions = ["1.6.2"])
+temporal_system_dependencies(versions = ["1.7.0"])
 ```
 
 ## Development
@@ -286,17 +293,32 @@ bazel test //tests/...
 
 All tests must pass before any commit with code changes.
 
-### Test results (last full run: 2026-04-19)
+### Test results (last full run: 2026-11-03)
 
-All 5 tests pass on Linux x86_64 with Temporal CLI 1.6.2.
+All 7 tests pass on Linux x86_64 with Temporal CLI 1.7.0 and temporalio 1.26.0.
+
+The worker-backed tests (`hello_test`, `namespace_config_test`,
+`temporal_replay_test`) need `temporalio` importable by Bazel's hermetic Python,
+which doesn't see host pip installs (#4). Until then, point it at them:
+
+```sh
+bazel test //tests/... \
+    --test_env=PYTHONPATH=/usr/lib/python3.14/site-packages:$HOME/.local/lib/python3.14/site-packages
+```
+
+CI runs only the tests that don't need `temporalio`: `launcher_unit_test`,
+`temporal_server_test`, `temporal_health_check_test`,
+`ready_timeout:worker_ready_timeout_test`.
 
 | Test target                        | What it verifies                                                              | Result |
 |------------------------------------|-------------------------------------------------------------------------------|--------|
 | `//tests:hello_test`               | HelloWorkflow, EchoWorkflow, MathWorkflow end-to-end; namespace isolation     | PASSED |
 | `//tests:namespace_config_test`    | Custom search attributes registered at startup; usable in workflow execute    | PASSED |
-| `//tests:temporal_replay_test`     | Workflow history export; history contains expected events                     | PASSED |
+| `//tests:temporal_replay_test`     | Workflow history export and SDK replay                                        | PASSED |
 | `//tests:temporal_server_test`     | temporal_server writes env file, gRPC health check, clean SIGTERM shutdown    | PASSED |
 | `//tests:temporal_health_check_test` | Health check exits 0/non-zero based on env file presence                    | PASSED |
+| `//tests:launcher_unit_test`       | `_ready_timeout` parsing/refusals, worker wait honours the timeout and stops when the worker exits, `main_test` passes manifest timeouts (#10) | PASSED |
+| `//tests/ready_timeout:worker_ready_timeout_test` | `temporal_test` with `worker_ready_timeout = 3` and a worker that never connects fails after 3 s, naming the task queue, without running the test body (#10) | PASSED |
 
 ### Launcher script
 
@@ -354,9 +376,6 @@ All test shell scripts must:
   Temporal CLI returns `versioningInfo.typeInfoByType` in the task-queue describe
   response. This is available in Temporal CLI >= 1.1 with versioning enabled; it is
   silently skipped otherwise.
-- `temporal_workflow_history` (replay committed histories) requires `temporal workflow replay`
-  which is not present in CLI 1.6.2. The rule and launcher code are implemented for
-  future use when the CLI gains this command.
 - `temporal_server` search attribute support: the server mode wrapper does not currently
   pass `--search-attribute` flags. If you need custom search attributes in a
   `temporal_server` target, add `--search-attribute` flags to the wrapper script.

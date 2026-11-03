@@ -44,10 +44,16 @@ def _load_workflow_module(path: str):
             f"workflow module not found at {path}",
             hint="Check the `workflow_module` attribute on temporal_build.",
         )
-    spec = importlib.util.spec_from_file_location("user_workflow", str(p))
+    # Load it under its own name with its directory on sys.path: temporalio's
+    # workflow sandbox re-imports the workflow's module by name, which fails
+    # for a module that only exists in this process's sys.modules
+    # ("No module named 'user_workflow'" in temporalio >= 1.2x).
+    sys.path.insert(0, str(p.parent.resolve()))
+    spec = importlib.util.spec_from_file_location(p.stem, str(p))
     if not spec or not spec.loader:
         _die(f"could not build import spec for {path}")
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[p.stem] = mod
     try:
         spec.loader.exec_module(mod)
     except Exception as exc:
