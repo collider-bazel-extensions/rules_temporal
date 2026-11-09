@@ -1,0 +1,5 @@
+# Keep the release archive loadable for consumers: tests/ load(s) dev-only
+# modules, which a consumer can't see, so `bazel query @rules_temporal//...` would
+# fail on them. GitHub's tag tarballs honour export-ignore. (A git_override
+# clone still has them.)
+tests/ export-ignore

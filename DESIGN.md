@@ -628,3 +628,7 @@ to reason about, and the default stays as it was.
 
 The worker wait also stops polling as soon as the worker process exits, so a
 crashing worker fails the test at once even under a long timeout.
+
+## Release archive contents (v0.6.1)
+
+`tests/` is `export-ignore` (`.gitattributes`): its packages load dev-only modules, which made `@rules_temporal//...` unloadable for consumers. GitHub's tag tarballs honour it; a `git_override` clone still contains it. `REPO.bazel` `ignore_directories` isn't used because it would also hide it from this repo's own `bazel test`. CI's `consumer` job (`.github/consumer/check.sh`) queries `//...` from the commit's `git archive`. Same fix as rules_kubectl#5 / rules_atlas#12.

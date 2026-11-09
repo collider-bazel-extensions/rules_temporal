@@ -62,7 +62,7 @@ primitives:
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.6.0")
+bazel_dep(name = "rules_temporal", version = "0.6.1")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
@@ -81,6 +81,8 @@ use_repo(temporal,
 # (Specify bin_dir explicitly when the binary lives outside the
 # auto-detected paths: `temporal.system(versions = ["1.7.0"], bin_dir = "/usr/local/bin")`)
 ```
+
+The release archive (the tag tarball) leaves out `tests/`, whose packages load dev-only modules, so `bazel query @rules_temporal//...` works for consumers (since v0.6.1). A `git_override` clone still contains them; name packages instead (for example `@rules_temporal//:all`).
 
 Both modes coexist per minor version. rules_temporal's own `MODULE.bazel` uses `temporal.version()` so CI runs on bare `ubuntu-latest`.
 

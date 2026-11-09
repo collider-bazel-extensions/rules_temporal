@@ -379,3 +379,7 @@ All test shell scripts must:
 - `temporal_server` search attribute support: the server mode wrapper does not currently
   pass `--search-attribute` flags. If you need custom search attributes in a
   `temporal_server` target, add `--search-attribute` flags to the wrapper script.
+
+## Release archive
+
+`.gitattributes` export-ignores `tests/`, so they may load dev-only modules; nothing else may. CI's `consumer` job checks that `@rules_temporal//...` loads from the commit's `git archive` (`.github/consumer/check.sh`).

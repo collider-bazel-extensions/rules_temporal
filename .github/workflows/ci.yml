@@ -8,6 +8,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  consumer:
+    # The release archive must load with //... for a consumer: tests/
+    # (dev-only loads) are export-ignore'd. Org sweep, cf. rules_kubectl#5.
+    name: consumer query (ubuntu-latest, git archive)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Consumer check
+        run: .github/consumer/check.sh "$RUNNER_TEMP/consumer"
+
   analysis:
     name: bazel test (ubuntu-latest, hermetic temporal.version)
     runs-on: ubuntu-latest
