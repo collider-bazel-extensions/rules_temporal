@@ -32,6 +32,8 @@ primitives:
   history files as Bazel artifacts for replay-based determinism testing.
 - **rules_itest integration** — `temporal_server` and `temporal_health_check` slot
   directly into multi-service integration tests.
+- **Runnable CLI** (v0.7) — `bazel run @rules_temporal//:temporal -- ...` runs the
+  same hermetic Temporal CLI the rules use; see [`temporal_cli`](#temporal_cli).
 
 ### Install-time (v0.3)
 
@@ -62,7 +64,7 @@ primitives:
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.6.1")
+bazel_dep(name = "rules_temporal", version = "0.7.0")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
@@ -303,6 +305,7 @@ load("@rules_temporal//:defs.bzl",
     "temporal_health_check",
     "temporal_namespace_config",
     "temporal_workflow_history",
+    "temporal_cli",
 )
 ```
 
@@ -529,6 +532,41 @@ temporal_health_check(
     server = ":my_temporal",
 )
 ```
+
+### `temporal_cli`
+
+The Temporal CLI as a runnable target (since v0.7.0). rules_temporal
+declares one per supported version, plus `//:temporal` for the default:
+
+| Target | CLI |
+| --- | --- |
+| `@rules_temporal//:temporal` | the default version (1.7.0) |
+| `@rules_temporal//:temporal_cli_1_7_0` | 1.7.0 |
+| `@rules_temporal//:temporal_cli_1_6_2` | 1.6.2 (needs `temporal.version(versions = ["1.6.2"])` in your root module) |
+
+They run the binary `temporal.version()` downloads (or `temporal.system()`
+links), so no host `temporal` is needed:
+
+```sh
+bazel run @rules_temporal//:temporal -- workflow describe --address localhost:7233 -w my-wf
+```
+
+From a consumer's binary, take it in `data` and pass its runfiles path:
+
+```python
+go_binary(
+    name = "driver",
+    srcs = ["main.go"],
+    data = ["@rules_temporal//:temporal"],
+    env = {"TEMPORAL_CLI": "$(rlocationpath @rules_temporal//:temporal)"},
+    deps = ["@rules_go//go/runfiles"],
+)
+```
+
+Then resolve `TEMPORAL_CLI` with your language's runfiles library (for Go,
+`runfiles.Rlocation(os.Getenv("TEMPORAL_CLI"))`). To wrap another
+`temporal_binary`, load `temporal_cli` from `defs.bzl`:
+`temporal_cli(name = "my_cli", binary = ":my_temporal_binary")`.
 
 ## Workflow history and determinism testing
 

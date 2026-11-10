@@ -18,10 +18,10 @@ rules_temporal/
 ├── defs.bzl                  # Public API re-exports
 ├── extensions.bzl            # Module extension: temporal binary repos (download or system)
 ├── repositories.bzl          # Legacy WORKSPACE equivalents of extensions.bzl
-├── BUILD.bazel               # Platform config_settings + temporal_binary targets
+├── BUILD.bazel               # Platform config_settings, temporal_binary + temporal_cli targets
 ├── DESIGN.md                 # Architecture and design decisions
 ├── private/
-│   ├── binary.bzl            # temporal_binary rule + TemporalBinaryInfo provider
+│   ├── binary.bzl            # temporal_binary + temporal_cli rules, TemporalBinaryInfo
 │   ├── worker.bzl            # temporal_build rule + TemporalWorkerInfo provider
 │   ├── namespace_config.bzl  # temporal_namespace_config + TemporalNamespaceConfigInfo
 │   ├── history.bzl           # temporal_workflow_history + TemporalWorkflowHistoryInfo
@@ -191,7 +191,13 @@ load("@rules_temporal//:defs.bzl",
     "temporal_health_check",
     "temporal_namespace_config",
     "temporal_workflow_history",
+    "temporal_cli",
 )
+
+# Runnable CLI (#13): //:temporal (default), //:temporal_cli_<version>.
+# `bazel run @rules_temporal//:temporal -- --version`; as a runfile,
+# $(rlocationpath @rules_temporal//:temporal).
+temporal_cli(name = "my_cli", binary = ":my_temporal_binary")
 
 # Declare a worker binary with its registered types.
 temporal_build(

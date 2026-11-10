@@ -69,6 +69,7 @@ jobs:
             //tests:temporal_server_test \
             //tests:temporal_health_check_test \
             //tests/ready_timeout:worker_ready_timeout_test \
+            //tests:temporal_cli_test \
             --test_output=errors
 
       - name: Upload test logs on failure

@@ -632,3 +632,27 @@ crashing worker fails the test at once even under a long timeout.
 ## Release archive contents (v0.6.1)
 
 `tests/` is `export-ignore` (`.gitattributes`): its packages load dev-only modules, which made `@rules_temporal//...` unloadable for consumers. GitHub's tag tarballs honour it; a `git_override` clone still contains it. `REPO.bazel` `ignore_directories` isn't used because it would also hide it from this repo's own `bazel test`. CI's `consumer` job (`.github/consumer/check.sh`) queries `//...` from the commit's `git archive`. Same fix as rules_kubectl#5 / rules_atlas#12.
+
+## Runnable CLI (`temporal_cli`, v0.7.0, #13)
+
+`temporal_binary` returns the CLI as a plain file (`DefaultInfo(files = ...)`,
+no `executable`), so before v0.7.0 the CLI reached consumers only inside
+`temporal_test` / `temporal_server`. `temporal_cli` wraps a `temporal_binary`
+and returns a symlink to the binary as its executable, which makes it
+`bazel run`-able and a single-file `data` dependency whose path is
+`$(rlocationpath ...)`. It forwards `TemporalBinaryInfo`.
+
+`temporal_binary` is unchanged: `temporal_test`, `temporal_build` and
+`temporal_server` take it as an attribute, and turning it executable would
+change their analysis for no gain. The root package declares
+`//:temporal_cli_<version>` for every supported version and aliases
+`//:temporal` to the default (`//:temporal_default`'s version). Like
+`//:temporal_<version>`, a version's target only builds when that version's
+repos exist (`temporal.version()` / `temporal.system()` for it);
+rules_temporal's own `MODULE.bazel` requests 1.7.0, so `//:temporal` works
+for every consumer.
+
+Tests: `//tests:temporal_cli_test` runs the CLI from runfiles via
+`$(rlocationpath //:temporal)` with `PATH` cleared, and the `consumer` CI
+job runs `bazel run @rules_temporal//:temporal -- --version` and an
+`sh_binary` that takes it in `data`, from the release archive.
