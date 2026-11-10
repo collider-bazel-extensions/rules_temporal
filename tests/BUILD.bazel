@@ -146,3 +146,15 @@ py_test(
     data = ["//private:launcher.py"],
     size = "small",
 )
+
+# ---------------------------------------------------------------------------
+# #13: //:temporal is a runnable CLI target; a consumer's binary takes it in
+# `data` and finds it at $(rlocationpath).
+# ---------------------------------------------------------------------------
+
+sh_test(
+    name = "temporal_cli_test",
+    srcs = ["temporal_cli_test.sh"],
+    args = ["$(rlocationpath //:temporal)"],
+    data = ["//:temporal"],
+)

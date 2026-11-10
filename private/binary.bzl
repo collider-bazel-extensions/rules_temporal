@@ -84,3 +84,43 @@ when building a custom rule that needs the Temporal CLI binary.
         ),
     },
 )
+
+# ---------------------------------------------------------------------------
+# temporal_cli — the selected binary as a runnable target (#13)
+# ---------------------------------------------------------------------------
+
+def _temporal_cli_impl(ctx):
+    bin_info = ctx.attr.binary[TemporalBinaryInfo]
+    out = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.symlink(
+        output = out,
+        target_file = bin_info.temporal,
+        is_executable = True,
+    )
+    return [
+        DefaultInfo(
+            files = depset([out]),
+            executable = out,
+            runfiles = ctx.runfiles(files = [out]),
+        ),
+        bin_info,
+    ]
+
+temporal_cli = rule(
+    implementation = _temporal_cli_impl,
+    executable = True,
+    doc = """\
+The Temporal CLI from a temporal_binary target, as a runnable target.
+
+`bazel run @rules_temporal//:temporal -- workflow describe ...` runs the
+hermetic CLI. As a `data` dependency of a consumer's binary, its path is
+`$(rlocationpath @rules_temporal//:temporal)`.
+""",
+    attrs = {
+        "binary": attr.label(
+            mandatory = True,
+            providers = [TemporalBinaryInfo],
+            doc = "A temporal_binary target, e.g. //:temporal_1_7_0.",
+        ),
+    },
+)

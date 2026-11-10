@@ -4,7 +4,7 @@ rules_temporal public API.
 Two families of primitives:
 
   Test-time (v0.1/v0.2 — boots a transient Temporal locally):
-    temporal_test, temporal_build, temporal_binary,
+    temporal_test, temporal_build, temporal_binary, temporal_cli,
     temporal_server, temporal_health_check,
     temporal_namespace_config, temporal_workflow_history
 
@@ -15,7 +15,7 @@ Load:
 
     load("@rules_temporal//:defs.bzl",
         # test-time
-        "temporal_test", "temporal_build", "temporal_binary",
+        "temporal_test", "temporal_build", "temporal_binary", "temporal_cli",
         "temporal_server", "temporal_health_check",
         "temporal_namespace_config", "temporal_workflow_history",
         "TemporalBinaryInfo", "TemporalWorkerInfo",
@@ -27,6 +27,7 @@ Load:
 
 load("//private:binary.bzl",
     _temporal_binary    = "temporal_binary",
+    _temporal_cli       = "temporal_cli",
     _TemporalBinaryInfo = "TemporalBinaryInfo",
 )
 load("//private:worker.bzl",
@@ -55,6 +56,7 @@ load("//private:install.bzl",
 
 # Re-export rules
 temporal_binary        = _temporal_binary
+temporal_cli           = _temporal_cli
 temporal_build         = _temporal_build
 temporal_test          = _temporal_test
 temporal_server        = _temporal_server
