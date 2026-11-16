@@ -777,3 +777,12 @@ that drift fails a `temporal_test` before its body runs. The fixture worker
 (`//tests:hello_worker_bin`) also takes `temporalio` from the hub, so every
 test — and the install smoke — runs with no host `temporalio`; CI checks
 that `python3 -c 'import temporalio'` fails before running them.
+
+**Exit without teardown (v0.8.1).** Once temporalio's native core has run,
+finalizing it at interpreter exit occasionally segfaults: about 1 run in 60
+locally, after the runner had already printed `OK`. A passing replay then
+failed the test (main CI after v0.8.0, `custom_runner_replay_test`). The
+runner decides its verdict, flushes stdout/stderr and leaves with
+`os._exit(0|1)`, skipping teardown. 300 runs in a row then exited 0. The
+launcher's replay failure message now includes the runner's exit code, so a
+crash (`exit -11`) is told apart from a replay failure (`exit 1`).

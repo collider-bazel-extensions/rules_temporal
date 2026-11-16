@@ -35,15 +35,26 @@ import asyncio
 import importlib
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
+
+
+def _exit(code: int) -> None:
+    """Exit without interpreter teardown. Once temporalio's native core has
+    started, finalizing it at exit occasionally segfaults (about 1 run in
+    60), which turned a replay that had printed OK into a failure. The
+    verdict is already decided and written, so flush and leave."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 def _die(msg: str, *, hint: str = "") -> None:
     sys.stderr.write(f"[replay_runner] {msg}\n")
     if hint:
         sys.stderr.write(f"[replay_runner] {hint}\n")
-    sys.exit(1)
+    _exit(1)
 
 
 _THIRD_PARTY_HINT = (
@@ -183,6 +194,7 @@ def _replay(workflows: list, history_path: str) -> None:
         )
     print(f"[replay_runner] OK: {history_path} replayed "
           f"(temporalio {version})", file=sys.stderr)
+    _exit(0)
 
 
 def _class_names(csv: str) -> list:

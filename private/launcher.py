@@ -333,7 +333,8 @@ def _replay_histories(replay_runner: str,
                 out = result.stdout.decode("utf-8", errors="replace")
                 err = result.stderr.decode("utf-8", errors="replace")
                 raise RuntimeError(
-                    f"Workflow history replay failed for {history_file}:\n"
+                    f"Workflow history replay failed for {history_file} "
+                    f"(exit {result.returncode}):\n"
                     f"stdout:\n{out}\nstderr:\n{err}"
                 )
         return
@@ -367,7 +368,8 @@ def _replay_histories(replay_runner: str,
             out = result.stdout.decode("utf-8", errors="replace")
             err = result.stderr.decode("utf-8", errors="replace")
             raise RuntimeError(
-                f"Workflow history replay failed for {history_file}:\n"
+                f"Workflow history replay failed for {history_file} "
+                f"(exit {result.returncode}):\n"
                 f"stdout:\n{out}\nstderr:\n{err}"
             )
         # Surface the runner's summary (which history, which temporalio).
