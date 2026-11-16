@@ -907,3 +907,11 @@ bazel test //tests/... \
 CI runs only the tests that don't need `temporalio`: `launcher_unit_test`,
 `temporal_server_test`, `temporal_health_check_test`,
 `ready_timeout:worker_ready_timeout_test`.
+
+---
+
+## Requesting a new rules package
+
+Want Bazel rules for another tool or service?
+[Request a rules package](https://github.com/collider-bazel-extensions/.github/issues/new?template=request-a-rules-package.yml).
+The [organization page](https://github.com/collider-bazel-extensions) lists every package.
