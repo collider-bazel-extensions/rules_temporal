@@ -41,9 +41,11 @@ def _temporal_workflow_history_impl(ctx):
 temporal_workflow_history = rule(
     implementation = _temporal_workflow_history_impl,
     doc = """\
-Declares exported workflow history files to replay against the running worker
-before the test binary executes.  Each file is replayed via
-'temporal workflow replay'; a non-determinism error causes an immediate failure.
+Declares exported workflow history files to replay against the worker's
+workflow code before the test binary executes.  Each file is replayed with the
+Temporal SDK's Replayer: the built-in Python runner (temporal_build's
+`workflow_module`; hermetic interpreter + pinned temporalio) or the worker's
+`replay_runner`. A non-determinism error causes an immediate failure.
 
 History files are exported from a live cluster via:
     temporal workflow show --workflow-id <id> -o json > history.json
@@ -63,9 +65,9 @@ Then committed as test fixtures and referenced here:
         srcs    = ["my_test.sh"],
     )
 
-Files are replayed in the order listed in srcs.  A non-zero exit from
-'temporal workflow replay' causes the launcher to fail immediately and print
-the full replay output to help identify the non-determinism.
+Files are replayed in the order listed in srcs.  A non-zero exit from the
+replay runner causes the launcher to fail immediately and print the full
+replay output to help identify the non-determinism.
 """,
     attrs = {
         "srcs": attr.label_list(

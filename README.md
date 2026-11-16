@@ -28,8 +28,11 @@ primitives:
   failures.
 - **Custom search attributes** — `temporal_namespace_config` registers search
   attributes at server startup so they are available before the worker starts.
-- **Workflow history inspection** — `temporal_workflow_history` captures exported
-  history files as Bazel artifacts for replay-based determinism testing.
+- **Workflow history replay** — `temporal_workflow_history` captures exported
+  history files as Bazel artifacts; `temporal_test` replays them with the
+  Temporal SDK before the test body runs. v0.8+: the built-in Python runner
+  uses a hermetic interpreter and a hash-pinned `temporalio`, so nothing comes
+  from the host's pip; see [History replay](#history-replay).
 - **rules_itest integration** — `temporal_server` and `temporal_health_check` slot
   directly into multi-service integration tests.
 - **Runnable CLI** (v0.7) — `bazel run @rules_temporal//:temporal -- ...` runs the
@@ -57,14 +60,18 @@ primitives:
 
 - Bazel 6+ (Bzlmod or WORKSPACE)
 - Temporal CLI 1.x installed on the host (or downloaded via `temporal.version()`)
-- Python 3.9+ (for the launcher; no pip dependencies)
+- Python 3.9+ on the host (`python3`, for the launcher; no pip dependencies)
+- Only for [history replay](#history-replay) with the built-in Python runner:
+  nothing to install. Bazel fetches a hermetic CPython 3.12 and the pinned
+  `temporalio` wheels (rules_python) the first time a test replays; tests
+  that don't replay never fetch them.
 
 ## Installation
 
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.7.0")
+bazel_dep(name = "rules_temporal", version = "0.8.0")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
@@ -96,6 +103,11 @@ load("@rules_temporal//:repositories.bzl", "temporal_system_dependencies")
 # Auto-detect from PATH; or pass bin_dir for explicit path:
 temporal_system_dependencies(versions = ["1.6.2"])
 ```
+
+The built-in history replay runner (v0.8+) needs the `@rules_temporal_pypi`
+hub, which only the Bzlmod `MODULE.bazel` creates. Under WORKSPACE, replay with
+a [custom runner](#custom-replay-runners) (`temporal_replay_runner` against your
+own pip repos works) and set `builtin_replay_runner = False` on the test.
 
 ## Quick start
 
@@ -305,6 +317,7 @@ load("@rules_temporal//:defs.bzl",
     "temporal_health_check",
     "temporal_namespace_config",
     "temporal_workflow_history",
+    "temporal_replay_runner",
     "temporal_cli",
 )
 ```
@@ -332,15 +345,15 @@ Validated at analysis time:
 - `workflow_types` must be non-empty and contain no duplicates or empty strings.
 - `activity_types` must contain no duplicates or empty strings.
 
-`workflow_module` is required only when downstream `temporal_test` targets attach a `history = ...` for SDK-based replay against **Python** workers. The launcher subprocess-execs `private/replay_runner.py`, which dynamic-loads the `.py` and instantiates the listed `workflow_types` for `temporalio.worker.Replayer`. Requires system `python3` + system-pip-installed `temporalio`.
+`workflow_module` is required only when downstream `temporal_test` targets replay histories (`history = ...`) against **Python** workers with the built-in runner. The launcher runs `@rules_temporal//private:replay_runner` — a `py_binary` on a hermetic interpreter with the pinned `temporalio` (v0.8+, #4) — which loads the `.py` **by path** and registers the listed `workflow_types` with `temporalio.worker.Replayer`. Nothing comes from the host's pip; see [History replay](#history-replay) for what the module may import.
 
-For **non-Python workers** (Go, TypeScript, Java, .NET, …), use `replay_runner` instead — see "Custom replay runners" below. The two attributes are mutually exclusive; `replay_runner` takes precedence when both are set.
+`replay_runner` (a custom runner) takes precedence over `workflow_module` when both are set. Use it for **non-Python workers** (Go, TypeScript, Java, .NET, …), and for Python workflow modules that need more than `temporalio` or a different `temporalio` version: build that runner with [`temporal_replay_runner`](#temporal_replay_runner).
 
 (v0.3.1's launcher used the now-removed `temporal workflow replay --workflow-file` CLI subcommand, which fails at runtime on `temporal` v1.6+; v0.3.2 added the Python SDK runner; v0.4 added the per-language extension point.)
 
-### Custom replay runners (non-Python workers)
+### Custom replay runners
 
-v0.4 adds an optional `replay_runner` attribute on `temporal_build` for workers in any language. The runner is a consumer-authored executable. **Contract**: takes a single positional argument `<history_file>`, exits 0 on success, non-zero on non-determinism error. That's it.
+v0.4 adds an optional `replay_runner` attribute on `temporal_build` for workers in any language (for Python, see [`temporal_replay_runner`](#temporal_replay_runner)). The runner is a consumer-authored executable. **Contract**: takes a single positional argument `<history_file>`, exits 0 on success, non-zero on non-determinism error. That's it.
 
 ```python
 temporal_build(
@@ -398,7 +411,7 @@ The runner needs to import the consumer's workflow code, which means linking aga
 
 | Language | Built-in? | Notes |
 |---|---|---|
-| Python | ✓ | Set `workflow_module` instead — uses `private/replay_runner.py` |
+| Python | ✓ | Set `workflow_module` (built-in runner, pinned `temporalio`), or build a runner against your own deps with [`temporal_replay_runner`](#temporal_replay_runner) |
 | Go | — | Use `replay_runner` with a small `go_binary` (~20 lines, example above) |
 | TypeScript | — | Use `replay_runner` with a small Node binary |
 | Java / .NET | — | Use `replay_runner` with a small JVM/.NET binary |
@@ -424,9 +437,18 @@ temporal_test(
     history          = ":my_histories",     # optional: temporal_workflow_history
     worker_ready_timeout = 30,              # optional: seconds, default 30
     server_ready_timeout = 30,              # optional: seconds, default 30
+    builtin_replay_runner = None,           # optional: None / True / False (v0.8)
     **kwargs,                               # forwarded to test_rule
 )
 ```
+
+`builtin_replay_runner` decides whether the test depends on the built-in
+replay runner (and so on the hermetic Python and pinned wheels, #4). `None`
+(default): only when `history` is set. `True`: also without `history`, for a
+test that captures a history at runtime and replays it with
+`$TEMPORAL_REPLAY_RUNNER`. `False`: never — for a worker with its own
+`replay_runner`, so the test fetches no Python. A worker's `replay_runner`
+is used over the built-in one either way.
 
 `worker_ready_timeout` is how long the launcher waits for the worker to poll
 its task queue; `server_ready_timeout` how long it waits for
@@ -445,6 +467,9 @@ Environment variables injected into the test binary:
 | `TEMPORAL_ADDRESS`    | `127.0.0.1:54321`            | gRPC address of the ephemeral server |
 | `TEMPORAL_NAMESPACE`  | `temporal-test-abc123def456` | Isolated per-test namespace          |
 | `TEMPORAL_TASK_QUEUE` | `my-task-queue`              | Task queue from `temporal_build`     |
+| `TEMPORAL_REPLAY_RUNNER` | `<runfiles>/rules_temporal+/private/replay_runner` | Built-in replay runner, an executable: `"$TEMPORAL_REPLAY_RUNNER" <workflow_module> <history.json> <Class,...>`. Set only when the runner is attached (`history`, or `builtin_replay_runner = True`). |
+| `TEMPORAL_CUSTOM_REPLAY_RUNNER` | `<runfiles>/_main/myapp/replay_runner` | The worker's `replay_runner`, if any: `"$TEMPORAL_CUSTOM_REPLAY_RUNNER" <history.json>` |
+| `TEMPORAL_WORKFLOW_MODULE` / `TEMPORAL_WORKFLOW_TYPES` | `<runfiles>/_main/myapp/workflows.py` / `OrderWorkflow` | The worker's `workflow_module` path and `workflow_types` (comma-separated) |
 
 ### `temporal_namespace_config`
 
@@ -476,11 +501,13 @@ Valid search attribute types: `Bool`, `Datetime`, `Double`, `Int`, `Keyword`,
 
 ### `temporal_workflow_history`
 
-Captures exported workflow history files as Bazel artifacts. At test time the
-launcher inspects each history file and verifies it contains a completed
-execution. When `temporal workflow replay` becomes available in the CLI, the
-launcher will also replay each history against the live worker, failing fast if
-any replay indicates a determinism break.
+Captures exported workflow history files as Bazel artifacts. At test time,
+after the worker is up and before the test body runs, the launcher replays each
+history with the Temporal SDK's `Replayer` against the worker's workflow code —
+the built-in runner for a Python `workflow_module`, or the worker's
+`replay_runner` — and fails the test on the first history that doesn't replay
+(non-determinism, a malformed history, a workflow module that won't import),
+printing the runner's report. See [History replay](#history-replay).
 
 ```python
 temporal_workflow_history(
@@ -499,6 +526,103 @@ temporal_test(
 
 See [Workflow history and determinism testing](#workflow-history-and-determinism-testing)
 for a full end-to-end example including how to capture history files.
+
+### History replay
+
+Replay checks that the current workflow code still produces the commands
+recorded in a history. There are two runners.
+
+**Built-in Python runner** (`workflow_module` on `temporal_build`). Since
+v0.8.0 (#4) it is the `@rules_temporal//private:replay_runner` `py_binary`:
+
+| | Pinned |
+|---|---|
+| `temporalio` | **1.36.1** (with `nexus-rpc`, `protobuf`, `types-protobuf`, `typing-extensions`; all hash-pinned in [`private/requirements_lock.txt`](private/requirements_lock.txt)) |
+| Python | CPython **3.12** (3.12.12 with rules_python 1.7.0; rules_python's hermetic toolchain; the runner sets `python_version`, so your default interpreter doesn't matter) |
+| Wheels | Linux x86_64 / aarch64 (manylinux), macOS x86_64 / arm64; wheels only (`--only-binary=:all:`), as `temporalio` and `protobuf` are C extensions |
+
+- **No host pip.** The host needs only `python3` to start the launcher;
+  `temporalio` comes from the `@rules_temporal_pypi` hub that Bazel builds
+  from the lock. CI runs every replay test on a runner where
+  `python3 -c 'import temporalio'` fails.
+- **Lazy.** The interpreter and wheels are fetched only when something builds
+  the runner: a `temporal_test` with `history` (or
+  `builtin_replay_runner = True`). A consumer that never replays doesn't
+  download Python or any wheel (`.github/consumer/check.sh` checks this
+  against the release archive).
+- **The workflow module is loaded by path, not from your worker's deps.** It
+  may import `temporalio`, its dependencies and the standard library — not
+  your other third-party packages, nor sibling modules via package-relative
+  imports. If it does, the runner fails with `failed to import ...` and points
+  at `temporal_replay_runner`.
+- **Replay results can depend on the SDK version.** The pin above is what
+  replays your histories, whatever your worker runs. To replay with your
+  worker's `temporalio`, use `temporal_replay_runner`.
+- Your worker binaries are untouched: they keep their own `temporalio` (from
+  your pip hub or elsewhere). `@rules_temporal_pypi` serves only the runner and
+  isn't visible to your module.
+
+The pinned version is bumped in rules_temporal releases
+(`private/requirements.in` → `tools/update_replay_requirements.sh`).
+
+#### `temporal_replay_runner`
+
+Builds a replay runner from the same source against **your** deps, for
+workflow modules with other third-party imports or a different `temporalio`.
+It follows the custom-runner contract (`<runner> <history_file>`), so it plugs
+into `temporal_build`'s `replay_runner`, which wins over the built-in runner:
+
+```python
+load("@rules_python//python:py_library.bzl", "py_library")
+load("@rules_temporal//:defs.bzl",
+    "temporal_build", "temporal_replay_runner", "temporal_test", "temporal_workflow_history")
+
+py_library(
+    name = "workflows",
+    srcs = ["workflows.py"],
+    deps = ["@my_pypi//temporalio", "@my_pypi//pydantic"],  # your hub, your versions
+)
+
+temporal_replay_runner(
+    name            = "replay_runner",
+    workflow_module = "myapp.workflows",        # import name, not a path
+    workflow_types  = ["OrderWorkflow"],
+    deps            = [":workflows"],
+    # python_version = "3.11",                  # if your hub isn't for the default
+)
+
+temporal_build(
+    name           = "order_worker",
+    worker_binary  = ":worker_bin",
+    replay_runner  = ":replay_runner",
+    task_queue     = "order-queue",
+    workflow_types = ["OrderWorkflow"],
+)
+
+temporal_test(
+    name    = "order_determinism_test",
+    worker  = ":order_worker",
+    history = ":order_histories",
+    srcs    = ["determinism_test.sh"],
+    builtin_replay_runner = False,   # don't fetch rules_temporal's Python / wheels
+)
+```
+
+The module is imported by name, so it resolves exactly as in your worker.
+Errors (bad history, missing class, non-determinism) read the same as the
+built-in runner's.
+
+#### Upgrading from v0.7
+
+- No more `pip install temporalio` for replay; drop it from CI if replay was
+  its only user.
+- `$TEMPORAL_REPLAY_RUNNER` is now an **executable** — run
+  `"$TEMPORAL_REPLAY_RUNNER" <module> <history> <classes>`, not
+  `python3 "$TEMPORAL_REPLAY_RUNNER" ...` — and is set only when the runner is
+  attached. A test that replays runtime-captured histories without `history`
+  needs `builtin_replay_runner = True`.
+- A workflow module that imported packages from the host's site-packages now
+  fails to import in the built-in runner: use `temporal_replay_runner`.
 
 ### `temporal_server`
 
@@ -700,11 +824,12 @@ load("@rules_temporal//:defs.bzl",
 )
 
 temporal_build(
-    name           = "order_worker",
-    worker_binary  = "//myapp/worker",
-    task_queue     = "order-queue",
-    workflow_types = ["OrderWorkflow"],
-    activity_types = ["charge_card", "send_confirmation", "refund_card"],
+    name            = "order_worker",
+    worker_binary   = "//myapp/worker",
+    workflow_module = "worker/main.py",   # the .py defining OrderWorkflow
+    task_queue      = "order-queue",
+    workflow_types  = ["OrderWorkflow"],
+    activity_types  = ["charge_card", "send_confirmation", "refund_card"],
 )
 
 temporal_workflow_history(
@@ -727,13 +852,16 @@ When `bazel test //myapp:order_determinism_test` runs, the launcher:
 
 1. Starts an ephemeral `temporal server start-dev`.
 2. Starts the `order_worker` binary and waits for it to register its task queue.
-3. Reads each `.json` file listed in `order_histories`.
-4. Verifies each history file contains events and a completed execution — fails
-   immediately and prints the file name if a history is malformed or empty.
-5. *(Future)* Replays each history via `temporal workflow replay` against the
-   live worker. A non-determinism bug in the worker code causes a non-zero exit
-   and the full replay output is printed to identify the offending event.
-6. `execve`'s `determinism_test.sh` with `TEMPORAL_*` env vars set.
+3. Replays each `.json` file listed in `order_histories` with the built-in
+   runner (hermetic Python, pinned `temporalio`; see
+   [History replay](#history-replay)) against `worker/main.py`'s
+   `OrderWorkflow`. A non-determinism bug fails the test before its body runs
+   and prints the runner's report, e.g.
+   `[replay_runner] replay of .../order_retry.json failed: NondeterminismError: ...
+   Activity type of scheduled event 'charge_card' does not match ...`. A
+   malformed history, a missing class or a module that won't import fail the
+   same way with their own message.
+4. `execve`'s `determinism_test.sh` with `TEMPORAL_*` env vars set.
 
 The test script itself can be as simple as a pass-through if the history check
 is all you need:
@@ -865,12 +993,16 @@ All test scripts should:
 
 ## Supported platforms
 
-| Platform | `temporal.system()` | `temporal.version()` |
-|---|---|---|
-| Linux x86_64 | Yes | Yes |
-| macOS arm64  | Yes | Checksums are placeholder values |
-| macOS amd64  | Yes | Checksums are placeholder values |
-| Windows      | No  | No                               |
+| Platform | `temporal.system()` | `temporal.version()` | Built-in replay runner wheels |
+|---|---|---|---|
+| Linux x86_64 | Yes | Yes | Yes |
+| Linux aarch64 | Yes | Yes | Yes |
+| macOS arm64  | Yes | Checksums are placeholder values | Yes |
+| macOS amd64  | Yes | Checksums are placeholder values | Yes |
+| Windows      | No  | No                               | No (not supported) |
+
+CI exercises Linux x86_64 only; the other platforms' wheels are pinned by hash
+in the lock but not run in CI.
 
 ## Known limitations
 
@@ -885,6 +1017,13 @@ All test scripts should:
   without long test timeouts.
 - **`~1–2 s` overhead per test** for server startup. For very large test suites,
   consider a shared-server approach with `temporal_server`.
+- **Built-in replay runner**: one pinned `temporalio` (1.36.1) for everyone,
+  and the workflow module may import only `temporalio`, its deps and the
+  standard library. Use `temporal_replay_runner` for anything else. The
+  first replaying test downloads CPython 3.12 and the wheels (on Linux
+  x86_64 about 120 MB of downloads — the CPython tarball ~104 MB, the
+  `temporalio` wheel ~15 MB — and ~400 MB unpacked in the output base; the
+  repository cache keeps the downloads).
 
 ## Development
 
@@ -893,20 +1032,15 @@ All test scripts should:
 bazel test //tests/...
 ```
 
-All 7 tests pass on Linux x86_64 with Temporal CLI 1.7.0.
+All 12 tests pass on Linux x86_64 with Temporal CLI 1.7.0 and no host
+`temporalio` (v0.8+, #4): the fixture worker and the replay runners take the
+pinned `temporalio` from `@rules_temporal_pypi`, and CI runs the whole suite on
+a runner where `python3 -c 'import temporalio'` fails. (The install smoke,
+`//tests/install_smoke:smoke_test`, is `manual`: it needs Docker and kind.)
 
-The worker-backed tests (`hello_test`, `namespace_config_test`,
-`temporal_replay_test`) need `temporalio` importable by Bazel's hermetic Python,
-which doesn't see host pip installs (#4). Until then, point it at them:
-
-```sh
-bazel test //tests/... \
-    --test_env=PYTHONPATH=/usr/lib/python3.14/site-packages:$HOME/.local/lib/python3.14/site-packages
-```
-
-CI runs only the tests that don't need `temporalio`: `launcher_unit_test`,
-`temporal_server_test`, `temporal_health_check_test`,
-`ready_timeout:worker_ready_timeout_test`.
+To bump the pinned `temporalio`, edit `private/requirements.in` and run
+`tools/update_replay_requirements.sh` (needs [uv](https://docs.astral.sh/uv/)),
+then update the version in this README, `DESIGN.md` and `CLAUDE.md`.
 
 ---
 

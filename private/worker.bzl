@@ -20,7 +20,7 @@ and consumed by the temporal_test launcher.
         "workflow_types":         "list of strings: registered workflow type names.",
         "activity_types":         "list of strings: registered activity type names.",
         "workflow_module":        "File or None: the .py file containing the workflow classes (used by the built-in Python replay runner).",
-        "replay_runner":          "File or None: custom replay-runner executable for non-Python workers. Takes argv `<history_file>` and exits 0/non-0 based on determinism.",
+        "replay_runner":          "File or None: custom replay-runner executable (non-Python workers, or a temporal_replay_runner). Takes argv `<history_file>` and exits 0/non-0 based on determinism.",
         "replay_runner_runfiles": "depset: runfiles for the custom replay_runner.",
         "manifest":               "File: JSON registration manifest (build artifact).",
     },
@@ -192,16 +192,21 @@ Example:
             allow_single_file = [".py"],
             doc = "Optional. The .py file containing the workflow class " +
                   "definitions (the same names listed in `workflow_types`). " +
-                  "Used by the built-in Python replay runner (Python " +
-                  "workflows only). For non-Python workers, use " +
-                  "`replay_runner` instead; both attributes are mutually " +
-                  "exclusive.",
+                  "Used by the built-in Python replay runner, which loads " +
+                  "it by path on a hermetic interpreter with a pinned " +
+                  "temporalio (#4): it may import temporalio, its deps and " +
+                  "the standard library only. For other imports or another " +
+                  "temporalio, set `replay_runner` to a " +
+                  "temporal_replay_runner; for non-Python workers, to your " +
+                  "own runner. `replay_runner` takes precedence.",
         ),
         "replay_runner": attr.label(
             executable = True,
             cfg = "target",
-            doc = "Optional. Custom replay-runner executable for " +
-                  "non-Python workers (Go, TypeScript, Java, etc.). " +
+            doc = "Optional. Custom replay-runner executable: for " +
+                  "non-Python workers (Go, TypeScript, Java, etc.), or a " +
+                  "temporal_replay_runner for Python workflows built " +
+                  "against your own deps. " +
                   "Takes argv `<history_file>` and exits 0 on success / " +
                   "non-zero on non-determinism. The consumer authors this " +
                   "binary linked against their workflow code (it knows " +

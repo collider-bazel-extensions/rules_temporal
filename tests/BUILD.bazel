@@ -1,4 +1,5 @@
 load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_temporal//:defs.bzl",
@@ -14,24 +15,32 @@ load("@rules_temporal//:defs.bzl",
 #
 # Registers HelloWorkflow, EchoWorkflow, MathWorkflow, CounterWorkflow.
 # Used by all smoke tests.
+#
+# #4: the fixture worker takes temporalio from the same pinned hub as the
+# built-in replay runner (@rules_temporal_pypi), so no test needs a host
+# `pip install temporalio`. That is a choice for this repo's fixtures only:
+# consumers' workers bring their own temporalio.
 # ---------------------------------------------------------------------------
+
+exports_files(
+    ["workers/hello_worker.py"],
+    visibility = ["//tests:__subpackages__"],
+)
+
+py_library(
+    name           = "hello_workflows",
+    srcs           = ["workers/hello_worker.py"],
+    visibility     = ["//tests:__subpackages__"],
+    deps           = ["@rules_temporal_pypi//temporalio"],
+)
 
 py_binary(
     name           = "hello_worker_bin",
     srcs           = ["workers/hello_worker.py"],
     main           = "workers/hello_worker.py",
-    python_version = "PY3",
-    visibility     = ["//tests:__pkg__"],
-)
-
-# v0.3 install smoke runs the worker host-side via system `python3`
-# (bazel's hermetic Python toolchain can't see host-pip-installed
-# `temporalio`). Expose the source so the smoke's sh_test can stage
-# it into runfiles without going through the py_binary launcher.
-filegroup(
-    name       = "hello_worker_py_src",
-    srcs       = ["workers/hello_worker.py"],
-    visibility = ["//tests/install_smoke:__pkg__"],
+    python_version = "3.12",
+    visibility     = ["//tests:__subpackages__"],
+    deps           = ["@rules_temporal_pypi//temporalio"],
 )
 
 temporal_build(
@@ -50,6 +59,7 @@ temporal_build(
         "add_activity",
         "multiply_activity",
     ],
+    visibility     = ["//tests:__subpackages__"],
 )
 
 # ---------------------------------------------------------------------------
@@ -87,7 +97,10 @@ temporal_test(
 )
 
 # ---------------------------------------------------------------------------
-# Replay test: export and replay workflow history
+# Replay test: export a live workflow's history and replay it with
+# $TEMPORAL_REPLAY_RUNNER (the built-in, hermetic runner). No `history`, so
+# the runner is attached explicitly. Committed-history replay, the runner's
+# error messages and temporal_replay_runner: //tests/replay.
 # ---------------------------------------------------------------------------
 
 temporal_test(
@@ -96,6 +109,7 @@ temporal_test(
     srcs   = ["temporal_replay_test.sh"],
     size   = "medium",
     tags   = ["temporal"],
+    builtin_replay_runner = True,
 )
 
 # ---------------------------------------------------------------------------

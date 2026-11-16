@@ -67,8 +67,18 @@ def _temporal_launcher_impl(ctx):
     # custom_replay_runner takes precedence over the built-in Python
     # path. If set, the launcher subprocess-execs it as
     # `<custom_replay_runner> <history_file>`. If unset, the launcher
-    # falls back to `python3 private/replay_runner.py <module> <history>
-    # <classes>`.
+    # falls back to the built-in py_binary (#4):
+    # `<replay_runner> <module> <history> <classes>`.
+    #
+    # The built-in runner is only a dependency when the macro attached it
+    # (history set, or builtin_replay_runner = True): analysing it fetches
+    # the hermetic interpreter and the pinned wheels, which a test that
+    # never replays must not pay for.
+    builtin_runner = ctx.attr.builtin_replay_runner
+    builtin_runner_path = (
+        builtin_runner[DefaultInfo].files_to_run.executable.short_path
+        if builtin_runner else ""
+    )
     custom_replay_runner_path = (
         worker_info.replay_runner.short_path
         if worker_info.replay_runner else ""
@@ -97,7 +107,7 @@ def _temporal_launcher_impl(ctx):
         workflow_types       = _json_str_list(worker_info.workflow_types),
         activity_types       = _json_str_list(worker_info.activity_types),
         workflow_module      = _json_str(workflow_module_path),
-        replay_runner        = _json_str(ctx.file.replay_runner.short_path),
+        replay_runner        = _json_str(builtin_runner_path),
         custom_replay_runner = _json_str(custom_replay_runner_path),
         search_attributes    = _json_str_dict(search_attrs),
         history_files        = _json_str_list(history_files),
@@ -111,7 +121,7 @@ def _temporal_launcher_impl(ctx):
     ctx.actions.write(output = manifest, content = manifest_content)
 
     # Collect all files the launcher needs at runtime.
-    files = [ctx.file.launcher, ctx.file.replay_runner, manifest]
+    files = [ctx.file.launcher, manifest]
     if worker_info.workflow_module:
         files.append(worker_info.workflow_module)
     if worker_info.replay_runner:
@@ -124,7 +134,7 @@ def _temporal_launcher_impl(ctx):
         ctx.runfiles(transitive_files = worker_info.replay_runner_runfiles),
         ctx.attr.test_binary.default_runfiles,
         history_runfiles,
-    ])
+    ] + ([builtin_runner[DefaultInfo].default_runfiles] if builtin_runner else []))
 
     # Wrapper script: sets env vars and execs the launcher.
     wrapper = ctx.actions.declare_file(ctx.label.name + "_temporal_wrapper.sh")
@@ -176,12 +186,14 @@ _temporal_launcher_test = rule(
             executable = False,
             doc = "The Python launcher script.",
         ),
-        "replay_runner": attr.label(
-            default = Label("//private:replay_runner.py"),
-            allow_single_file = True,
-            executable = False,
-            doc = "The SDK-based replay shim. Invoked by the launcher when " +
-                  "the consumer attaches a temporal_workflow_history.",
+        "builtin_replay_runner": attr.label(
+            default = None,
+            executable = True,
+            cfg = "target",
+            doc = "The built-in SDK replay runner (//private:replay_runner), " +
+                  "set by the temporal_test macro only when the test " +
+                  "replays. Unset: no Python toolchain or wheels are " +
+                  "fetched for this test.",
         ),
         "namespace_config": attr.label(
             default   = None,
@@ -229,6 +241,7 @@ def temporal_test(
         history = None,
         worker_ready_timeout = 30,
         server_ready_timeout = 30,
+        builtin_replay_runner = None,
         **kwargs):
     """Macro: runs a test against an ephemeral Temporal cluster.
 
@@ -262,6 +275,15 @@ def temporal_test(
                           Keep it below the test's own `timeout`.
         server_ready_timeout: Seconds (int, float or string) to wait for the
                           Temporal dev server to become ready. Default 30.
+        builtin_replay_runner: Whether to attach the built-in replay runner
+                          (hermetic Python + pinned temporalio, #4). None
+                          (default): only when `history` is set. True: also
+                          without `history`, for a test that captures a
+                          history at runtime and runs $TEMPORAL_REPLAY_RUNNER.
+                          False: never; for workers whose temporal_build has
+                          its own `replay_runner`, so Python and the wheels
+                          are not fetched. A worker's `replay_runner` is used
+                          over the built-in one either way.
         **kwargs:         Remaining kwargs forwarded to test_rule.
     """
     srcs  = srcs  or []
@@ -283,7 +305,16 @@ def temporal_test(
         **kwargs
     )
 
-    # 2. Wrap it with the Temporal launcher.
+    # 2. Wrap it with the Temporal launcher. The built-in replay runner is
+    #    attached only when this test replays (#4): building it fetches a
+    #    Python interpreter and the pinned temporalio wheels.
+    if builtin_replay_runner == None:
+        builtin_replay_runner = history != None
+    if builtin_replay_runner not in (True, False):
+        fail("temporal_test {}: builtin_replay_runner = {}: expected None, True or False.".format(
+            name,
+            repr(builtin_replay_runner),
+        ))
     _temporal_launcher_test(
         name             = name,
         worker           = worker,
@@ -295,4 +326,5 @@ def temporal_test(
         history          = history,
         worker_ready_timeout = str(worker_ready_timeout),
         server_ready_timeout = str(server_ready_timeout),
+        builtin_replay_runner = Label("//private:replay_runner") if builtin_replay_runner else None,
     )

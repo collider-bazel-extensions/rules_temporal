@@ -1,4 +1,5 @@
-"""Unit tests for the launcher's readiness timeouts (#10). No server needed."""
+"""Unit tests for the launcher (no server needed): readiness timeouts (#10)
+and how history replay picks and runs its runner (#4)."""
 
 import importlib.util
 import os
@@ -108,6 +109,57 @@ class MainTestPassesTimeoutsTest(unittest.TestCase):
 
     def test_old_manifest_defaults(self):
         self.assertEqual(self._main_test({}), {"server": 30.0, "worker": 30.0})
+
+
+class ReplayHistoriesTest(unittest.TestCase):
+    """#4: the built-in runner is an executable run directly (no python3)."""
+
+    def _run(self, **kw):
+        calls = []
+
+        def fake_run(argv, **_):
+            calls.append(argv)
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=b"", stderr=b"[replay_runner] OK: h replayed (temporalio 9.9)\n")
+
+        with mock.patch.object(L.subprocess, "run", fake_run), \
+             mock.patch.object(L, "_ensure_executable", lambda p: None):
+            L._replay_histories(workflow_types=["A", "B"], history_files=["h1", "h2"], **kw)
+        return calls
+
+    def test_builtin_runner_is_executed_directly(self):
+        calls = self._run(replay_runner="/rf/replay_runner", workflow_module="/rf/wf.py")
+        self.assertEqual(calls, [
+            ["/rf/replay_runner", "/rf/wf.py", "h1", "A,B"],
+            ["/rf/replay_runner", "/rf/wf.py", "h2", "A,B"],
+        ])
+
+    def test_custom_runner_wins(self):
+        calls = self._run(replay_runner="/rf/replay_runner", workflow_module="/rf/wf.py",
+                          custom_replay_runner="/rf/custom")
+        self.assertEqual(calls, [["/rf/custom", "h1"], ["/rf/custom", "h2"]])
+
+    def test_no_builtin_runner_attached(self):
+        with self.assertRaises(RuntimeError) as cm:
+            self._run(replay_runner="", workflow_module="/rf/wf.py")
+        self.assertIn("builtin_replay_runner = False", str(cm.exception))
+
+    def test_no_workflow_module(self):
+        with self.assertRaises(RuntimeError) as cm:
+            self._run(replay_runner="/rf/replay_runner", workflow_module="")
+        self.assertIn("workflow_module", str(cm.exception))
+
+    def test_failure_reports_runner_output(self):
+        def fake_run(argv, **_):
+            return subprocess.CompletedProcess(
+                argv, 1, stdout=b"", stderr=b"[replay_runner] replay of h1 failed: Nondeterminism\n")
+
+        with mock.patch.object(L.subprocess, "run", fake_run), \
+             mock.patch.object(L, "_ensure_executable", lambda p: None):
+            with self.assertRaises(RuntimeError) as cm:
+                L._replay_histories("/rf/replay_runner", "/rf/wf.py", ["A"], ["h1"])
+        self.assertIn("Workflow history replay failed for h1", str(cm.exception))
+        self.assertIn("replay of h1 failed: Nondeterminism", str(cm.exception))
 
 
 if __name__ == "__main__":

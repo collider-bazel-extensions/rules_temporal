@@ -1,4 +1,37 @@
+load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_library.bzl", "py_library")
+load(":replay.bzl", "REPLAY_PYTHON_VERSION")
+
 exports_files([
     "launcher.py",
     "replay_runner.py",
+    "requirements.in",
+    "requirements_lock.txt",
 ])
+
+# ---------------------------------------------------------------------------
+# History replay (#4). Nothing here is built unless a temporal_test replays
+# (history set, or builtin_replay_runner = True) or a consumer uses
+# temporal_replay_runner, so Python and the wheels stay unfetched otherwise.
+# ---------------------------------------------------------------------------
+
+# Built-in runner: hermetic interpreter + the temporalio pinned in
+# requirements_lock.txt. Argv: <workflow_module_path> <history_file>
+# <class_names>.
+py_binary(
+    name = "replay_runner",
+    srcs = ["replay_runner.py"],
+    main = "replay_runner.py",
+    python_version = REPLAY_PYTHON_VERSION,
+    visibility = ["//visibility:public"],
+    deps = ["@rules_temporal_pypi//temporalio"],
+)
+
+# The same source as a library (`import replay_runner`) for
+# temporal_replay_runner, which supplies its own temporalio.
+py_library(
+    name = "replay_runner_lib",
+    srcs = ["replay_runner.py"],
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)

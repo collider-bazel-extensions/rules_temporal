@@ -306,10 +306,11 @@ def _replay_histories(replay_runner: str,
          on non-determinism.
 
       2. Built-in Python runner (Python workers): execute
-         `python3 private/replay_runner.py <workflow_module>
-         <history_file> <class_names_csv>`. Requires
-         `workflow_module` on temporal_build + system-pip-installed
-         `temporalio`.
+         `<replay_runner> <workflow_module> <history_file>
+         <class_names_csv>`, where `replay_runner` is the
+         //private:replay_runner py_binary (hermetic interpreter + pinned
+         temporalio, #4), run from runfiles. Requires `workflow_module`
+         on temporal_build; nothing from the host's pip.
     """
     if not history_files:
         return
@@ -344,12 +345,20 @@ def _replay_histories(replay_runner: str,
             "for non-Python workers) on temporal_build. See README "
             "\"Custom replay runners\" for language-specific examples."
         )
+    if not replay_runner:
+        raise RuntimeError(
+            "history replay needs the built-in replay runner, but this "
+            "temporal_test was declared with builtin_replay_runner = False "
+            "and its temporal_build has no `replay_runner`. Drop "
+            "builtin_replay_runner = False, or set temporal_build's "
+            "`replay_runner` (e.g. a temporal_replay_runner)."
+        )
+    _ensure_executable(replay_runner)
     class_names_csv = ",".join(workflow_types)
     for history_file in history_files:
         _log(f"Replaying workflow history (Python runner): {history_file}")
         result = subprocess.run(
-            ["python3", replay_runner,
-             workflow_module, history_file, class_names_csv],
+            [replay_runner, workflow_module, history_file, class_names_csv],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
@@ -361,6 +370,10 @@ def _replay_histories(replay_runner: str,
                 f"Workflow history replay failed for {history_file}:\n"
                 f"stdout:\n{out}\nstderr:\n{err}"
             )
+        # Surface the runner's summary (which history, which temporalio).
+        for line in result.stderr.decode("utf-8", errors="replace").splitlines():
+            if line.startswith("[replay_runner] OK:"):
+                _log(line)
 
 
 def _start_server(temporal_bin: str, namespace: str,
@@ -572,7 +585,9 @@ def main_test(m: dict, workspace: str) -> None:
     # Expose the resolved replay-runner + workflow-module paths so test
     # scripts that capture a history at runtime can invoke replay
     # themselves (no need to re-resolve the launcher's runfiles).
-    # TEMPORAL_REPLAY_RUNNER is the BUILT-IN Python runner;
+    # TEMPORAL_REPLAY_RUNNER is the BUILT-IN Python runner, an executable
+    # (`$TEMPORAL_REPLAY_RUNNER <module> <history> <classes>`; set only when
+    # the test attached it: history, or builtin_replay_runner = True);
     # TEMPORAL_CUSTOM_REPLAY_RUNNER (if set on temporal_build) is the
     # consumer's custom binary — argv contract `<history_file>`.
     if replay_runner:
