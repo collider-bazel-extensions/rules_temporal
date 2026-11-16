@@ -1,0 +1,10 @@
+# Inputs for the built-in replay runner's pinned Python world
+# (@rules_temporal_pypi, //private:replay_runner). Only the replay path uses
+# it; consumers' worker binaries bring their own temporalio.
+#
+# Regenerate private/requirements_lock.txt after editing:
+#     tools/update_replay_requirements.sh
+#
+# Replay results can depend on the SDK version: keep this pin in step with
+# the documented version in README.md ("History replay").
+temporalio==1.36.1

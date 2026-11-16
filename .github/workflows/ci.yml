@@ -20,6 +20,23 @@ jobs:
           bazelisk-cache: true
           repository-cache: true
 
+      # Ubuntu 24.04+ restricts unprivileged user namespaces, which
+      # Bazel's linux-sandbox needs.
+      - name: Allow unprivileged user namespaces (linux-sandbox)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      # #4: replay (and this repo's fixture worker) use the temporalio pinned
+      # in private/requirements_lock.txt on a hermetic interpreter. Fail if
+      # the host could stand in for it.
+      - name: Verify NO host temporalio
+        run: |
+          set -euo pipefail
+          if python3 -c 'import temporalio' 2>/dev/null; then
+            echo "FAIL: host python3 imports temporalio; the hermetic replay check would be meaningless" >&2
+            exit 1
+          fi
+          echo "OK — host python3 has no temporalio"
+
       - name: Consumer check
         run: .github/consumer/check.sh "$RUNNER_TEMP/consumer"
 
@@ -33,6 +50,23 @@ jobs:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}-analysis
           repository-cache: true
+
+      # Ubuntu 24.04+ restricts unprivileged user namespaces, which
+      # Bazel's linux-sandbox needs.
+      - name: Allow unprivileged user namespaces (linux-sandbox)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      # #4: replay (and this repo's fixture worker) use the temporalio pinned
+      # in private/requirements_lock.txt on a hermetic interpreter. Fail if
+      # the host could stand in for it.
+      - name: Verify NO host temporalio
+        run: |
+          set -euo pipefail
+          if python3 -c 'import temporalio' 2>/dev/null; then
+            echo "FAIL: host python3 imports temporalio; the hermetic replay check would be meaningless" >&2
+            exit 1
+          fi
+          echo "OK — host python3 has no temporalio"
 
       # v0.5+: rules_temporal's own MODULE.bazel uses
       # `temporal.version(["1.7.0"])` so the toolchain materializes
@@ -60,17 +94,21 @@ jobs:
             //:temporal_default \
             //tests/install_smoke:smoke_test
 
-      # Tests that need no host temporalio: launcher unit tests and a
-      # temporal_test whose worker never connects (#10).
-      - name: bazel test (no-temporalio tests)
+      # v0.8+ (#4): every test runs, including the worker-backed and
+      # replay tests: their temporalio is the pinned @rules_temporal_pypi
+      # one, not the host's (checked above). install_smoke is manual.
+      - name: bazel test //tests/...
+        run: bazel test //tests/... --test_output=errors
+
+      # The replay tests again, never from the (disk-)cache, with their
+      # logs, so this run shows replays executing with the pinned SDK.
+      - name: bazel test replay tests (uncached, logs)
         run: |
           bazel test \
-            //tests:launcher_unit_test \
-            //tests:temporal_server_test \
-            //tests:temporal_health_check_test \
-            //tests/ready_timeout:worker_ready_timeout_test \
-            //tests:temporal_cli_test \
-            --test_output=errors
+            //tests/replay/... \
+            //tests:temporal_replay_test \
+            --nocache_test_results \
+            --test_output=all
 
       - name: Upload test logs on failure
         if: failure()
@@ -94,6 +132,23 @@ jobs:
           disk-cache: ${{ github.workflow }}-install-smoke
           repository-cache: true
 
+      # Ubuntu 24.04+ restricts unprivileged user namespaces, which
+      # Bazel's linux-sandbox needs.
+      - name: Allow unprivileged user namespaces (linux-sandbox)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      # #4: replay (and this repo's fixture worker) use the temporalio pinned
+      # in private/requirements_lock.txt on a hermetic interpreter. Fail if
+      # the host could stand in for it.
+      - name: Verify NO host temporalio
+        run: |
+          set -euo pipefail
+          if python3 -c 'import temporalio' 2>/dev/null; then
+            echo "FAIL: host python3 imports temporalio; the hermetic replay check would be meaningless" >&2
+            exit 1
+          fi
+          echo "OK — host python3 has no temporalio"
+
       # The install smoke uses the temporal CLI host-side to execute
       # workflows against the port-forwarded Frontend gRPC. That's
       # SEPARATE from rules_temporal's toolchain (which is now
@@ -110,23 +165,8 @@ jobs:
       - name: Verify Docker is available
         run: docker version
 
-      # Worker (tests/workers/hello_worker.py) imports the
-      # `temporalio` Python SDK. The smoke invokes it via system
-      # `python3`. Install system-wide (not --user): bazel test
-      # scrubs HOME for the test action, so packages in
-      # ~/.local/lib/pythonX.Y/site-packages are invisible to the
-      # spawned worker. PEP 668 requires --break-system-packages on
-      # newer runners — the runner is ephemeral so the impact is
-      # nil.
-      - name: Install temporalio Python SDK
-        run: |
-          set -euo pipefail
-          # `--ignore-installed` skips pip's attempt to uninstall
-          # debian-managed typing_extensions (which has no RECORD
-          # file and would abort the install).
-          sudo python3 -m pip install --break-system-packages --ignore-installed \
-              'temporalio>=1.7,<2'
-          python3 -c 'import temporalio; print("temporalio", temporalio.__version__)'
+      # v0.8+ (#4): no `pip install temporalio` — the smoke's worker is
+      # the //tests:hello_worker_bin py_binary with the pinned SDK.
 
       - name: bazel test //tests/install_smoke:smoke_test
         # kind boot (~30s) + cert-manager install (~60s) +

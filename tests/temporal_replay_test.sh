@@ -5,8 +5,9 @@
 # against the current worker code, confirming determinism.
 #
 # Approach: runs HelloWorkflow with a known ID, exports the history, then
-# replays it via 'temporal workflow replay'.  A non-zero exit from replay
-# indicates the workflow code is non-deterministic relative to the history.
+# replays it with the built-in SDK replay runner ($TEMPORAL_REPLAY_RUNNER).
+# A non-zero exit from replay indicates the workflow code is
+# non-deterministic relative to the history.
 
 set -euo pipefail
 
@@ -77,26 +78,25 @@ echo "OK: history exported to $HISTORY_FILE"
 # 3. Replay the history via the SDK Replayer (v0.3.2+).
 #
 # The `temporal workflow replay --workflow-file` CLI subcommand was
-# removed upstream — replay is now SDK-only. The launcher exports
-# TEMPORAL_REPLAY_RUNNER + TEMPORAL_WORKFLOW_MODULE +
-# TEMPORAL_WORKFLOW_TYPES so test scripts can drive replay against
+# removed upstream — replay is now SDK-only. With
+# builtin_replay_runner = True the launcher exports
+# TEMPORAL_REPLAY_RUNNER (v0.8+: the hermetic built-in runner, an
+# executable with its own pinned temporalio, #4) + TEMPORAL_WORKFLOW_MODULE
+# + TEMPORAL_WORKFLOW_TYPES so test scripts can drive replay against
 # captured histories.
 # -------------------------------------------------------------------------
 
-if [[ -n "${TEMPORAL_REPLAY_RUNNER:-}" && -n "${TEMPORAL_WORKFLOW_MODULE:-}" ]]; then
-    echo "Replaying history via replay_runner.py …"
-    if python3 "$TEMPORAL_REPLAY_RUNNER" \
-            "$TEMPORAL_WORKFLOW_MODULE" \
-            "$HISTORY_FILE" \
-            "HelloWorkflow" 2>&1; then
-        echo "OK: replay completed without non-determinism"
-    else
-        echo "FAIL: replay reported a non-determinism error" >&2
-        exit 1
-    fi
+require_env TEMPORAL_REPLAY_RUNNER
+require_env TEMPORAL_WORKFLOW_MODULE
+echo "Replaying history via \$TEMPORAL_REPLAY_RUNNER …"
+if "$TEMPORAL_REPLAY_RUNNER" \
+        "$TEMPORAL_WORKFLOW_MODULE" \
+        "$HISTORY_FILE" \
+        "HelloWorkflow" 2>&1; then
+    echo "OK: replay completed without non-determinism"
 else
-    echo "SKIP: TEMPORAL_REPLAY_RUNNER / TEMPORAL_WORKFLOW_MODULE not set"
-    echo "      (temporal_build needs `workflow_module` to be set)"
+    echo "FAIL: replay reported a non-determinism error" >&2
+    exit 1
 fi
 
 # -------------------------------------------------------------------------

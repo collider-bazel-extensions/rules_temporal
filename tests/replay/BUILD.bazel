@@ -1,0 +1,154 @@
+load("@rules_python//python:py_library.bzl", "py_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_temporal//:defs.bzl",
+    "temporal_build",
+    "temporal_replay_runner",
+    "temporal_test",
+    "temporal_workflow_history",
+)
+
+# #4: history replay through the hermetic, pinned temporalio. Histories in
+# testdata/ were recorded from tests/workers/hello_worker.py (HelloWorkflow
+# "ReplayFixture", MathWorkflow 6, 7). None of these tests needs temporalio
+# on the host.
+
+temporal_workflow_history(
+    name   = "hello_histories",
+    worker = "//tests:hello_worker",
+    srcs   = [
+        "testdata/hello_history.json",
+        "testdata/math_history.json",
+    ],
+)
+
+# ---------------------------------------------------------------------------
+# Built-in runner: committed histories replay before the test body runs.
+# ---------------------------------------------------------------------------
+
+temporal_test(
+    name    = "history_replay_test",
+    worker  = "//tests:hello_worker",
+    history = ":hello_histories",
+    srcs    = ["builtin_runner_body.sh"],
+    tags    = ["temporal"],
+)
+
+# Built-in runner against drifted workflow code: the launcher must fail the
+# test with the runner's non-determinism report, before the body runs.
+temporal_build(
+    name            = "drifted_worker",
+    worker_binary   = "//tests:hello_worker_bin",
+    workflow_module = "drifted_workflows.py",
+    task_queue      = "test-hello-queue",
+    workflow_types  = ["HelloWorkflow", "MathWorkflow"],
+)
+
+temporal_workflow_history(
+    name   = "drifted_histories",
+    worker = ":drifted_worker",
+    srcs   = ["testdata/hello_history.json"],
+)
+
+# Expected to fail; run by history_replay_drift_test.
+temporal_test(
+    name    = "drifted_replay_test",
+    worker  = ":drifted_worker",
+    history = ":drifted_histories",
+    srcs    = ["must_not_run_body.sh"],
+    tags    = ["manual"],
+)
+
+sh_test(
+    name = "history_replay_drift_test",
+    srcs = ["history_replay_drift_test.sh"],
+    args = ["$(rootpath :drifted_replay_test)"],
+    data = [":drifted_replay_test"],
+    size = "medium",
+    tags = ["temporal"],
+)
+
+# ---------------------------------------------------------------------------
+# Consumer-built runner (temporal_replay_runner): the workflow module comes
+# from deps, imported by name, and the worker's `replay_runner` wins over
+# the built-in runner. builtin_replay_runner = False keeps the built-in
+# runner (and its hub) out of the test entirely.
+# ---------------------------------------------------------------------------
+
+temporal_replay_runner(
+    name            = "hello_replay_runner",
+    workflow_module = "tests.workers.hello_worker",
+    workflow_types  = ["HelloWorkflow", "MathWorkflow"],
+    deps            = ["//tests:hello_workflows"],
+)
+
+py_library(
+    name = "drifted_workflows",
+    srcs = ["drifted_workflows.py"],
+    deps = ["@rules_temporal_pypi//temporalio"],
+)
+
+temporal_replay_runner(
+    name            = "drifted_replay_runner",
+    workflow_module = "tests.replay.drifted_workflows",
+    workflow_types  = ["HelloWorkflow", "MathWorkflow"],
+    deps            = [":drifted_workflows"],
+)
+
+temporal_build(
+    name           = "custom_runner_worker",
+    worker_binary  = "//tests:hello_worker_bin",
+    replay_runner  = ":hello_replay_runner",
+    task_queue     = "test-hello-queue",
+    workflow_types = ["HelloWorkflow", "MathWorkflow"],
+)
+
+temporal_workflow_history(
+    name   = "custom_runner_histories",
+    worker = ":custom_runner_worker",
+    srcs   = [
+        "testdata/hello_history.json",
+        "testdata/math_history.json",
+    ],
+)
+
+temporal_test(
+    name    = "custom_runner_replay_test",
+    worker  = ":custom_runner_worker",
+    history = ":custom_runner_histories",
+    srcs    = ["custom_runner_body.sh"],
+    tags    = ["temporal"],
+    builtin_replay_runner = False,
+)
+
+# ---------------------------------------------------------------------------
+# The runners themselves, no server: good and drifted histories, and the
+# error messages for a bad history / workflow module / class name.
+# ---------------------------------------------------------------------------
+
+sh_test(
+    name = "replay_runner_test",
+    srcs = ["replay_runner_test.sh"],
+    args = [
+        "$(rlocationpath //private:replay_runner)",
+        "$(rlocationpath :hello_replay_runner)",
+        "$(rlocationpath :drifted_replay_runner)",
+        "$(rlocationpath //tests:workers/hello_worker.py)",
+        "$(rlocationpath drifted_workflows.py)",
+        "$(rlocationpath needs_dep_workflows.py)",
+        "$(rlocationpath testdata/hello_history.json)",
+        "$(rlocationpath testdata/math_history.json)",
+        "$(rlocationpath testdata/truncated_history.json)",
+    ],
+    data = [
+        "drifted_workflows.py",
+        "needs_dep_workflows.py",
+        "testdata/hello_history.json",
+        "testdata/math_history.json",
+        "testdata/truncated_history.json",
+        ":drifted_replay_runner",
+        ":hello_replay_runner",
+        "//private:replay_runner",
+        "//tests:workers/hello_worker.py",
+    ],
+    size = "medium",
+)

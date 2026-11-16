@@ -11,8 +11,8 @@
 #      one-shot Job that calls `temporal operator namespace
 #      create`).
 #   4. `kubectl port-forward` the frontend Service to localhost:7233.
-#   5. Run the existing tests/workers/hello_worker.py worker (a
-#      reusable py_binary from v0.1) in the background, pointed at
+#   5. Run the existing //tests:hello_worker_bin worker (a hermetic
+#      py_binary with the pinned temporalio, #4) in the background, pointed at
 #      localhost:7233 + namespace smoke-ns + task queue smoke-queue.
 #   6. `temporal workflow execute --type HelloWorkflow --input
 #      '"world"'`. The CLI submits the workflow, the worker picks
@@ -51,21 +51,12 @@ _resolve() {
 
 CLUSTER_YAML="$(_resolve tests/install_smoke/cluster.yaml)" \
     || { echo "smoke: cluster.yaml not in runfiles" >&2; exit 1; }
-# v0.3 install smoke runs the worker host-side via system `python3`
-# rather than the rules_python `py_binary` shape — bazel's hermetic
-# Python interpreter doesn't see system `pip install` packages, so
-# the py_binary form would fail to import `temporalio`. Resolving
-# the .py source out of runfiles (it ships as the py_binary's
-# `srcs`) and invoking `python3` against it sidesteps the toolchain
-# entirely; consumers only need `pip install temporalio` on the
-# host.
-WORKER_PY="$(_resolve tests/workers/hello_worker.py)" \
-    || { echo "smoke: tests/workers/hello_worker.py not in runfiles" >&2; exit 1; }
-
-command -v python3 >/dev/null 2>&1 || {
-  echo "smoke: \`python3\` not on PATH (host-side worker requires it + 'pip install temporalio')" >&2
-  exit 1
-}
+# v0.8+ (#4): the worker is the //tests:hello_worker_bin py_binary, whose
+# temporalio comes from the pinned @rules_temporal_pypi hub on a hermetic
+# interpreter, so the host needs no `pip install temporalio`. (v0.3–v0.7
+# ran the .py source with the host's python3 + pip-installed temporalio.)
+WORKER_BIN="$(_resolve tests/hello_worker_bin)" \
+    || { echo "smoke: tests/hello_worker_bin not in runfiles" >&2; exit 1; }
 
 command -v temporal >/dev/null 2>&1 || {
   echo "smoke: \`temporal\` not on PATH. Install from https://temporal.io/setup/install-temporal-cli" >&2
@@ -135,11 +126,11 @@ fi
 
 # Start the hello worker in the background, pointed at the
 # port-forwarded Frontend.
-echo "smoke: starting hello_worker.py via system python3"
+echo "smoke: starting hello_worker_bin (hermetic py_binary)"
 TEMPORAL_ADDRESS=localhost:7233 \
 TEMPORAL_NAMESPACE="$TEMPORAL_NS" \
 TEMPORAL_TASK_QUEUE="$TASK_QUEUE" \
-    python3 "$WORKER_PY" >/tmp/worker.log 2>&1 &
+    "$WORKER_BIN" >/tmp/worker.log 2>&1 &
 WORKER_PID=$!
 
 # Wait for the worker to print its readiness line. Without this,

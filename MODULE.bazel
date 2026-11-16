@@ -1,6 +1,6 @@
 module(
     name = "rules_temporal",
-    version = "0.7.0",
+    version = "0.8.0",
 )
 
 bazel_dep(name = "bazel_skylib", version = "1.5.0")
@@ -23,10 +23,36 @@ git_override(
     commit = "81b60ab80df46b64c612f2576ffef0a7af98ccb6",  # v0.2.0
 )
 
-# rules_python is dev-only — used only by the in-tree
-# tests/BUILD.bazel's py_binary worker fixtures (Bazel 8+ removed
-# native py_binary). Consumers don't inherit it.
-bazel_dep(name = "rules_python", version = "1.7.0", dev_dependency = True)
+# rules_python (#4): the built-in history replay runner
+# (//private:replay_runner) is a py_binary on a hermetic interpreter with a
+# hash-pinned temporalio from @rules_temporal_pypi, so replay needs nothing
+# from the host's pip. Kept at the lowest version we test so a consumer's own
+# rules_python wins version selection.
+#
+# Laziness: the python toolchain and the pip hub are only fetched when
+# something builds the replay runner. temporal_test attaches it only when
+# `history` is set (or builtin_replay_runner = True); a consumer that never
+# replays does not download Python or any wheel (checked by
+# .github/consumer/check.sh).
+bazel_dep(name = "rules_python", version = "1.7.0")
+
+# The replay runner pins this version with py_binary(python_version = ...),
+# so a consumer's default interpreter doesn't matter. Keep in step with
+# REPLAY_PYTHON_VERSION in private/replay.bzl and
+# tools/update_replay_requirements.sh.
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.12")
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    # Wheels only: temporalio and protobuf are C extensions; the lock lists
+    # wheels for linux x86_64/aarch64 and macOS x86_64/arm64.
+    extra_pip_args = ["--only-binary=:all:"],
+    hub_name = "rules_temporal_pypi",
+    python_version = "3.12",
+    requirements_lock = "//private:requirements_lock.txt",
+)
+use_repo(pip, "rules_temporal_pypi")
 
 # v0.5: temporal.version() ships real shas for the temporal CLI tarballs
 # from GitHub releases. Hermetic; no host install. rules_temporal's own
