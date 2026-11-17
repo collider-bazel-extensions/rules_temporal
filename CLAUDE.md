@@ -312,7 +312,7 @@ temporal_health_check(name = "my_health", server = ":my_server")
 ### MODULE.bazel (Bzlmod)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.8.1")
+bazel_dep(name = "rules_temporal", version = "0.8.2")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 

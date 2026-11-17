@@ -71,7 +71,7 @@ primitives:
 ### Bzlmod (`MODULE.bazel`)
 
 ```python
-bazel_dep(name = "rules_temporal", version = "0.8.1")
+bazel_dep(name = "rules_temporal", version = "0.8.2")
 
 temporal = use_extension("@rules_temporal//:extensions.bzl", "temporal")
 
@@ -1049,3 +1049,9 @@ then update the version in this README, `DESIGN.md` and `CLAUDE.md`.
 Want Bazel rules for another tool or service?
 [Request a rules package](https://github.com/collider-bazel-extensions/.github/issues/new?template=request-a-rules-package.yml).
 The [organization page](https://github.com/collider-bazel-extensions) lists every package.
+
+## License
+
+[Apache License 2.0](LICENSE) (SPDX: `Apache-2.0`).
+
+Manifests in `private/manifests/` that are rendered from upstream charts or releases remain under their upstream projects' licences.
